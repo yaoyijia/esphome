@@ -34,9 +34,9 @@ void RealTimeClock::call_setup() {
 }
 void RealTimeClock::synchronize_epoch_(uint32_t epoch) {
 
-  const char *comp_source = LOG_STR_ARG(this->get_name().c_str());
-  ESP_LOGD(TAG, "Sync epoch from");
-  ESP_LOGD(TAG, "%s", comp_source);
+std::string comp_source_str = this->get_name();
+const char *comp_source = comp_source_str.c_str();
+ESP_LOGD(TAG, "Sync epoch from %s", comp_source);
   lastTimeSource = comp_source;
   time_t old_epoch = now().timestamp;
 
