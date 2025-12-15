@@ -34,8 +34,7 @@ void RealTimeClock::call_setup() {
 }
 void RealTimeClock::synchronize_epoch_(uint32_t epoch) {
 
-std::string comp_source_str = this->get_name();
-const char *comp_source = comp_source_str.c_str();
+const char *comp_source = "GPS";
 ESP_LOGD(TAG, "Sync epoch from %s", comp_source);
   lastTimeSource = comp_source;
   time_t old_epoch = now().timestamp;
