@@ -54,5 +54,8 @@ void CustomGPSTime::sync_from_tiny_gps_(TinyGPSPlus &tiny_gps) {
            (unsigned long)val.timestamp, this->last_epoch_micros_);
 }
 
-}  // namespace custom_gps_time
-}  // namespace esphome
+namespace esphome {
+namespace custom_gps_time {
+    CustomGPSTime* global_custom_gps_time = nullptr;
+} // namespace custom_gps_time
+} // namespace esphome
