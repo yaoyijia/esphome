@@ -52,11 +52,10 @@ void CustomGPSTime::sync_from_tiny_gps_(TinyGPSPlus &tiny_gps) {
   
   val.recalc_timestamp_utc(false);
 
-  // 记录精确时刻（添加校验）
-  if (val.timestamp > 1609459200) {  // 确保时间在2021年之后
-    this->last_epoch_ = val.timestamp;          // 存储UTC秒
-    this->last_epoch_micros_ = micros();        // 存储此刻的微秒时钟
-    
+  // 记录精确时刻
+  this->last_epoch_ = val.timestamp;          // 存储UTC秒
+  this->last_epoch_micros_ = micros();        // 存储此刻的微秒时钟
+  
   ESP_LOGD(TAG, "Precise time recorded: Epoch=%lu, Micros=%u", 
            (unsigned long)val.timestamp, this->last_epoch_micros_);
 }
