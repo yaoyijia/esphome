@@ -20,7 +20,7 @@ void PPSSensor::setup() {
   instance_ = this; // 设置静态实例
   pinMode(this->pps_pin_, INPUT_PULLUP); // 配置为上拉输入
   // 绑定中断：在PPS引脚上升沿触发，调用中断处理函数
-  attachInterrupt(digitalPinToInterrupt(this->pps_pin_), &PPSSensor::pps_interrupt_handler, RISING);
+  attachInterrupt(digitalPinToInterrupt(this->pps_pin_), &PPSSensor::pps_interrupt_handler, FALLING);
   ESP_LOGI("PPS", "PPS sensor initialized on GPIO %d", this->pps_pin_);
 }
 
