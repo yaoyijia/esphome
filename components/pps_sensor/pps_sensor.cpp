@@ -31,11 +31,13 @@ void PPSSensor::setup() {
 
 void PPSSensor::update() {
   // 检查是否有新的PPS脉冲
-  if (this->pps_updated_ && this->interval_sensor_ != nullptr) {
+  if (this->pps_updated_) {
     this->pps_updated_ = false;
     
     // 计算间隔（秒）
-    float interval_s = this->pps_interval_us_ / 1000000.0f;
+    float current_interval_s = this->pps_interval_us_ / 1000000.0f;
+    // 你可以将 current_interval_s 存储到一个成员变量中，供 get_interval_s() 返回
+    this->last_calculated_interval_s_ = current_interval_s;
     
     // 通过传感器对象发布状态
     this->interval_sensor_->publish_state(interval_s);
