@@ -25,36 +25,19 @@ void startNTP() {
 
 // === 新增：高精度时间计算辅助函数 ===
 uint32_t get_precise_ntp_timestamp(uint32_t &ntp_seconds, uint32_t &ntp_fraction) {
-  // 尝试从高精度时间源获取基准
-  // 请确保这里的ID与您YAML配置中设置的完全一致
-  auto *time_comp = id(my_precise_time); // custom_gps_time 组件ID
-  auto *pps_comp = id(my_pps_driver);    // pps_sensor 组件ID
-  
-  if (time_comp != nullptr && pps_comp != nullptr) {
-    // 注意：需要确保您的custom_gps_time组件有get_precise_time方法
-    // 且返回bool和两个uint32_t参数（秒和微秒）
+  // 改为使用成员变量而不是 id() 函数
+  if (this->time_comp_ != nullptr && this->pps_comp_ != nullptr) {
     uint32_t epoch_secs, epoch_micros;
-    if (time_comp->get_precise_time(epoch_secs, epoch_micros)) {
-      uint32_t pps_micros = pps_comp->get_last_pps_micros();
+    if (this->time_comp_->get_precise_time(epoch_secs, epoch_micros)) {
+      uint32_t pps_micros = this->pps_comp_->get_last_pps_micros();
       uint32_t now_micros = micros();
       
-      // 计算从最近PPS脉冲到现在的微秒偏移（处理计数器回绕）
       uint32_t offset_since_pps = (now_micros - pps_micros) & 0xFFFFFFFFUL;
       
-      // 计算NTP时间戳
       ntp_seconds = epoch_secs + seventyYears + (offset_since_pps / 1000000UL);
       ntp_fraction = ((offset_since_pps % 1000000UL) * 4294967296UL) / 1000000UL;
       
-      // 调试信息
-      #ifdef DEBUG
-      Serial.print("High-precision NTP: ");
-      Serial.print(ntp_seconds);
-      Serial.print("s + ");
-      Serial.print(ntp_fraction);
-      Serial.println(" fraction");
-      #endif
-      
-      return 1; // 成功使用高精度源
+      return 1;
     }
   }
   
