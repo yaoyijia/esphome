@@ -50,7 +50,7 @@ void CustomGPSTime::sync_from_tiny_gps_(TinyGPSPlus &tiny_gps) {
   val.second = tiny_gps.time.second();
   
   // 计算day_of_year
-  val.day_of_year = calculate_day_of_year(val.year, val.month, val.day_of_month);
+  val.day_of_year = 1;
   
   val.recalc_timestamp_utc(true);  // 使用true确保正确计算
 
