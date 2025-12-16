@@ -27,7 +27,10 @@ void PPSSensor::setup() {
                   FALLING); // 根据你的实际连接使用 RISING 或 FALLING
   
   ESP_LOGI("PPS", "PPS sensor initialized on GPIO %d", this->pps_pin_);
-}
+  global_pps_sensor = this;
+}  
+  
+
 
 void PPSSensor::update() {
   // 检查是否有新的PPS脉冲
@@ -54,5 +57,9 @@ void PPSSensor::update() {
   }
 }
 
-}  // namespace pps_sensor
-}  // namespace esphome
+// 在文件末尾添加
+namespace esphome {
+namespace pps_sensor {
+    PPSSensor* global_pps_sensor = nullptr;
+} // namespace pps_sensor
+} // namespace esphome
