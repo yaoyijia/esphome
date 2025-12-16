@@ -37,24 +37,19 @@ void CustomGPSTime::sync_from_tiny_gps_(TinyGPSPlus &tiny_gps) {
   val.year = tiny_gps.date.year();
   val.month = tiny_gps.date.month();
   val.day_of_month = tiny_gps.date.day();
-  val.day_of_week = 1;   // 占位，不用于计算
-  val.day_of_year = 1;   // 占位，不用于计算
+  val.day_of_week = 1;
+  val.day_of_year = 1;
   val.hour = tiny_gps.time.hour();
   val.minute = tiny_gps.time.minute();
   val.second = tiny_gps.time.second();
   
   val.recalc_timestamp_utc(false);
 
-  // === 核心操作：记录精确时刻 ===
-  this->last_epoch_ = val.timestamp;          // 存储UTC秒
-  this->last_epoch_micros_ = micros();        // 存储此刻的微秒时钟
-  // =============================
+  // === 核心：只记录，不进行系统时间同步 ===
+  this->last_epoch_ = val.timestamp;
+  this->last_epoch_micros_ = micros();
   
-  // 同步ESPhome系统时间（保持原有功能）
-  this->synchronize_epoch_(val.timestamp);
-  this->has_time_ = true;
-  
-  ESP_LOGD(TAG, "Time synced & recorded: Epoch=%lu, Micros=%u", 
+  ESP_LOGD(TAG, "Precise time recorded: Epoch=%lu, Micros=%u", 
            (unsigned long)val.timestamp, this->last_epoch_micros_);
 }
 
