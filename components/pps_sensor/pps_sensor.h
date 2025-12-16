@@ -21,6 +21,7 @@ class PPSSensor : public PollingComponent {
   // 添加一个公共方法，用于获取最新的间隔值（秒）
 
   float get_interval_s() const { return last_calculated_interval_s_; }
+  uint32_t get_last_pps_micros() const { return last_pps_micros_; }
 
  protected:
   // 中断处理函数（必须是静态的）
