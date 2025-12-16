@@ -69,22 +69,6 @@ void CustomGPSTime::sync_from_tiny_gps_(TinyGPSPlus &tiny_gps) {
   }
 }
 
-// 添加辅助函数计算一年中的第几天
-int CustomGPSTime::calculate_day_of_year(int year, int month, int day) {
-  static const int month_days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-  int day_of_year = day;
-  
-  for (int i = 0; i < month - 1; i++) {
-    day_of_year += month_days[i];
-  }
-  
-  // 闰年处理
-  if (month > 2 && ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))) {
-    day_of_year++;
-  }
-  
-  return day_of_year;
-}
 
 }  // namespace custom_gps_time
 }  // namespace esphome
