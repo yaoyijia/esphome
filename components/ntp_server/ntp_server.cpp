@@ -3,8 +3,9 @@
 #include <WiFiUdp.h>
 
 // 包含相关组件的头文件
-#include "custom_gps_time.h"
-#include "pps_sensor.h"
+// 如果组件在同一目录下，使用相对路径
+#include "../custom_gps_time/custom_gps_time.h"
+#include "../pps_sensor/pps_sensor.h"
 
 namespace esphome {
 namespace ntp_server {
