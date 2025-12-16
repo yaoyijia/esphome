@@ -19,7 +19,7 @@ class PPSSensor : public PollingComponent {
   // 硬件优先级
   float get_setup_priority() const override { return esphome::setup_priority::HARDWARE; }
   // 添加一个公共方法，用于获取最新的间隔值（秒）
-  float get_interval_s() const { return pps_interval_us_ / 1000000.0f; }
+
   float get_interval_s() const { return last_calculated_interval_s_; }
 
  protected:
