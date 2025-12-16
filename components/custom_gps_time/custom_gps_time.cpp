@@ -14,6 +14,8 @@ void CustomGPSTime::setup() {
   } else {
     ESP_LOGE(TAG, "GPS parent not set!");
   }
+    global_custom_gps_time = this;
+  }
 }
 
 void CustomGPSTime::dump_config() { 
