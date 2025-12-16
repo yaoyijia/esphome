@@ -20,6 +20,7 @@ class PPSSensor : public PollingComponent {
   float get_setup_priority() const override { return esphome::setup_priority::HARDWARE; }
   // 添加一个公共方法，用于获取最新的间隔值（秒）
   float get_interval_s() const { return pps_interval_us_ / 1000000.0f; }
+  float get_interval_s() const { return last_calculated_interval_s_; }
 
  protected:
   // 中断处理函数（必须是静态的）
@@ -37,6 +38,8 @@ class PPSSensor : public PollingComponent {
   
   // 静态实例指针，用于中断回调
   static PPSSensor *instance_;
+  // +++ 新增：用于稳定读取的间隔值 +++
+  float last_calculated_interval_s_{0.0f};
 };
 
 }  // namespace pps_sensor
