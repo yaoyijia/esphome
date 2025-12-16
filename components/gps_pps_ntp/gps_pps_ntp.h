@@ -23,8 +23,23 @@ class GPSPPSNTPServer : public Component, public uart::UARTDevice {
   // 获取当前状态
   bool is_gps_locked() const { return gps_locked_; }
   bool is_pps_active() const { return pps_active_; }
-  uint8_t get_satellites() const { return gps_.satellites.value(); }
-  float get_hdop() const { return gps_.hdop.hdop(); }
+  
+  // 修改：去掉const限定符，或者直接访问成员变量
+  uint8_t get_satellites() { 
+    // 直接从TinyGPSPlus对象获取卫星数量
+    if (gps_.satellites.isValid()) {
+      return gps_.satellites.value();
+    }
+    return 0;
+  }
+  
+  float get_hdop() { 
+    // 直接从TinyGPSPlus对象获取HDOP
+    if (gps_.hdop.isValid()) {
+      return gps_.hdop.hdop();
+    }
+    return 99.99f; // 无效值
+  }
   
   // 时间质量指标
   float get_time_uncertainty() const { return time_uncertainty_; }
