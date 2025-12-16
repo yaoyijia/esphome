@@ -35,5 +35,8 @@ class CustomGPSTime : public Component, public gps::GPSListener {
   uint32_t last_epoch_micros_{0};
 };
 
+// 声明全局变量（用于其他组件访问）
+extern CustomGPSTime *global_custom_gps_time;
+
 }  // namespace custom_gps_time
 }  // namespace esphome
