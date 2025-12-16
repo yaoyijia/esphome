@@ -7,6 +7,9 @@ namespace custom_gps_time {
 
 static const char *const TAG = "custom_gps_time";
 
+// 定义全局变量（必须在函数定义之前）
+CustomGPSTime *global_custom_gps_time = nullptr;
+
 void CustomGPSTime::setup() {
   if (this->gps_parent_ != nullptr) {
     this->gps_parent_->register_listener(this);
@@ -14,13 +17,14 @@ void CustomGPSTime::setup() {
   } else {
     ESP_LOGE(TAG, "GPS parent not set!");
   }
-    global_custom_gps_time = this;
-  }
+  
+  // 设置全局变量引用
+  global_custom_gps_time = this;
 }
 
 void CustomGPSTime::dump_config() { 
-    // 替换掉 LOG_TIME，使用简单的日志
-    ESP_LOGCONFIG(TAG, "Custom GPS Time");
+  // 使用正确的日志宏
+  ESP_LOGCONFIG(TAG, "Custom GPS Time");
 }
 
 void CustomGPSTime::on_update(TinyGPSPlus &tiny_gps) {
@@ -56,8 +60,5 @@ void CustomGPSTime::sync_from_tiny_gps_(TinyGPSPlus &tiny_gps) {
            (unsigned long)val.timestamp, this->last_epoch_micros_);
 }
 
-namespace esphome {
-namespace custom_gps_time {
-    CustomGPSTime* global_custom_gps_time = nullptr;
-} // namespace custom_gps_time
-} // namespace esphome
+}  // namespace custom_gps_time
+}  // namespace esphome
