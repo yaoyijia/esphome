@@ -44,52 +44,56 @@ void SimpleGPSNTPServer::setup() {
 void SimpleGPSNTPServer::parse_gps() {
   if (!uart_) return;
   
-  while (uart_->available()) {
-    char c = uart_->read();
-    
-    // 简单解析GPRMC语句获取时间
-    if (c == '$') {
-      gps_idx_ = 0;
-    }
-    
-    if (gps_idx_ < sizeof(gps_buffer_) - 1) {
-      gps_buffer_[gps_idx_++] = c;
-      gps_buffer_[gps_idx_] = 0;
-      
-      // 检查是否收到完整句子
-      if (c == '\n') {
-        if (strstr(gps_buffer_, "$GPRMC")) {
-          // 简单解析时间 (HHMMSS.XXX)
-          char *ptr = strchr(gps_buffer_, ',');
-          if (ptr) {
-            ptr++; // 跳过第一个逗号
-            
-            // 获取时间字段
-            char time_str[16];
-            int i = 0;
-            while (*ptr != ',' && *ptr != '.' && i < 15) {
-              time_str[i++] = *ptr++;
-            }
-            time_str[i] = 0;
-            
-            if (strlen(time_str) >= 6) {
-              // 解析时、分、秒
-              int hour = (time_str[0] - '0') * 10 + (time_str[1] - '0');
-              int minute = (time_str[2] - '0') * 10 + (time_str[3] - '0');
-              int second = (time_str[4] - '0') * 10 + (time_str[5] - '0');
-              
-              // 简单转换为秒数（假设为UTC当天时间）
-              gps_seconds_ = hour * 3600 + minute * 60 + second;
-              gps_valid_ = true;
-              
-              ESP_LOGI("SimpleNTP", "GPS time: %02d:%02d:%02d UTC", hour, minute, second);
-            }
-          }
-        }
+  // 使用ESPHome的UART读取API
+  uint8_t c;
+  while (uart_->available() > 0) {
+    // 尝试读取一个字节
+    if (uart_->read_byte(&c)) {
+      // 简单解析GPRMC语句获取时间
+      if (c == '$') {
         gps_idx_ = 0;
       }
-    } else {
-      gps_idx_ = 0; // 缓冲区溢出，重置
+      
+      if (gps_idx_ < sizeof(gps_buffer_) - 1) {
+        gps_buffer_[gps_idx_++] = c;
+        gps_buffer_[gps_idx_] = 0;
+        
+        // 检查是否收到完整句子
+        if (c == '\n') {
+          // 检查是否是GPRMC语句
+          if (strstr(gps_buffer_, "$GPRMC") || strstr(gps_buffer_, "$GNRMC")) {
+            // 简单解析时间 (HHMMSS.XXX)
+            char *ptr = strchr(gps_buffer_, ',');
+            if (ptr) {
+              ptr++; // 跳过第一个逗号
+              
+              // 获取时间字段
+              char time_str[16];
+              int i = 0;
+              while (*ptr != ',' && *ptr != '.' && i < 15) {
+                time_str[i++] = *ptr++;
+              }
+              time_str[i] = 0;
+              
+              if (strlen(time_str) >= 6) {
+                // 解析时、分、秒
+                int hour = (time_str[0] - '0') * 10 + (time_str[1] - '0');
+                int minute = (time_str[2] - '0') * 10 + (time_str[3] - '0');
+                int second = (time_str[4] - '0') * 10 + (time_str[5] - '0');
+                
+                // 简单转换为秒数（假设为UTC当天时间）
+                gps_seconds_ = hour * 3600 + minute * 60 + second;
+                gps_valid_ = true;
+                
+                ESP_LOGI("SimpleNTP", "GPS time: %02d:%02d:%02d UTC", hour, minute, second);
+              }
+            }
+          }
+          gps_idx_ = 0;
+        }
+      } else {
+        gps_idx_ = 0; // 缓冲区溢出，重置
+      }
     }
   }
 }
