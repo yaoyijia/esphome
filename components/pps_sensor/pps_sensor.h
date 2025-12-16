@@ -18,8 +18,8 @@ class PPSSensor : public PollingComponent {
   
   // 硬件优先级
   float get_setup_priority() const override { return esphome::setup_priority::HARDWARE; }
+  
   // 添加一个公共方法，用于获取最新的间隔值（秒）
-
   float get_interval_s() const { return last_calculated_interval_s_; }
   uint32_t get_last_pps_micros() const { return last_pps_micros_; }
 
@@ -39,9 +39,13 @@ class PPSSensor : public PollingComponent {
   
   // 静态实例指针，用于中断回调
   static PPSSensor *instance_;
-  // +++ 新增：用于稳定读取的间隔值 +++
+  
+  // 用于稳定读取的间隔值
   float last_calculated_interval_s_{0.0f};
 };
+
+// 声明全局变量（在命名空间内）
+extern PPSSensor *global_pps_sensor;
 
 }  // namespace pps_sensor
 }  // namespace esphome
