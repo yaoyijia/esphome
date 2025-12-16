@@ -86,15 +86,21 @@ void GPSPPSNTPServer::dump_config() {
   ESP_LOGCONFIG("GPSPPSNTP", "  PPS Pin: %d", pps_pin_);
   ESP_LOGCONFIG("GPSPPSNTP", "  GPS Baud Rate: %u", gps_baud_rate_);
   
+  // 注意：这里调用的是非const方法
+  uint8_t satellites = get_satellites();
+  float hdop = get_hdop();
+  
   if (gps_locked_) {
-    ESP_LOGCONFIG("GPSPPSNTP", "  GPS Status: LOCKED (%d satellites)", get_satellites());
-    ESP_LOGCONFIG("GPSPPSNTP", "  HDOP: %.2f", get_hdop());
+    ESP_LOGCONFIG("GPSPPSNTP", "  GPS Status: LOCKED (%d satellites)", satellites);
+    ESP_LOGCONFIG("GPSPPSNTP", "  HDOP: %.2f", hdop);
   } else {
     ESP_LOGCONFIG("GPSPPSNTP", "  GPS Status: Searching");
   }
   
   ESP_LOGCONFIG("GPSPPSNTP", "  PPS Status: %s", pps_active_ ? "ACTIVE" : "INACTIVE");
   ESP_LOGCONFIG("GPSPPSNTP", "  Time Uncertainty: %.6f s", time_uncertainty_);
+  ESP_LOGCONFIG("GPSPPSNTP", "  PPS Pulses: %u", pps_count_);
+  ESP_LOGCONFIG("GPSPPSNTP", "  GPS Updates: %u", gps_updates_);
 }
 
 void GPSPPSNTPServer::parse_gps_data() {
