@@ -3,7 +3,11 @@
 namespace esphome {
 namespace pps_sensor {
 
+// 定义静态成员变量
 PPSSensor *PPSSensor::instance_ = nullptr;
+
+// 定义全局变量
+PPSSensor *global_pps_sensor = nullptr;
 
 // 中断服务程序（必须简洁！）
 void IRAM_ATTR PPSSensor::pps_interrupt_handler() {
@@ -27,24 +31,24 @@ void PPSSensor::setup() {
                   FALLING); // 根据你的实际连接使用 RISING 或 FALLING
   
   ESP_LOGI("PPS", "PPS sensor initialized on GPIO %d", this->pps_pin_);
-  global_pps_sensor = this;
-}  
   
-
+  // 设置全局变量
+  global_pps_sensor = this;
+}
 
 void PPSSensor::update() {
   // 检查是否有新的PPS脉冲
   if (this->pps_updated_ && this->interval_sensor_ != nullptr) {
     this->pps_updated_ = false;
     
-    // +++ 修正点3：声明并计算 interval_s 变量 +++
-    float interval_s = this->pps_interval_us_ / 1000000.0f; // 这里声明了变量
+    // 计算间隔（秒）
+    float interval_s = this->pps_interval_us_ / 1000000.0f;
     
     // 存储到稳定成员变量中，供 get_interval_s() 返回
     this->last_calculated_interval_s_ = interval_s;
     
     // 通过传感器对象发布状态
-    this->interval_sensor_->publish_state(interval_s); // 这里使用了已声明的变量
+    this->interval_sensor_->publish_state(interval_s);
     
     // 可选：调试日志
     static uint32_t last_log = 0;
@@ -57,9 +61,5 @@ void PPSSensor::update() {
   }
 }
 
-// 在文件末尾添加
-namespace esphome {
-namespace pps_sensor {
-    PPSSensor* global_pps_sensor = nullptr;
-} // namespace pps_sensor
-} // namespace esphome
+}  // namespace pps_sensor
+}  // namespace esphome
