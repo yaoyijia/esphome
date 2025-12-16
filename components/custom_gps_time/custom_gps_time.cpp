@@ -44,31 +44,22 @@ void CustomGPSTime::sync_from_tiny_gps_(TinyGPSPlus &tiny_gps) {
   val.year = tiny_gps.date.year();
   val.month = tiny_gps.date.month();
   val.day_of_month = tiny_gps.date.day();
-  val.day_of_week = tiny_gps.date.day();  // 修正：使用实际日期计算星期
+  val.day_of_week = 1;   // 占位
+  val.day_of_year = 1;   // 占位
   val.hour = tiny_gps.time.hour();
   val.minute = tiny_gps.time.minute();
   val.second = tiny_gps.time.second();
   
-  // 计算day_of_year
-  val.day_of_year = 1;
-  
-  val.recalc_timestamp_utc(true);  // 使用true确保正确计算
+  val.recalc_timestamp_utc(false);
 
   // 记录精确时刻（添加校验）
   if (val.timestamp > 1609459200) {  // 确保时间在2021年之后
     this->last_epoch_ = val.timestamp;          // 存储UTC秒
     this->last_epoch_micros_ = micros();        // 存储此刻的微秒时钟
     
-    ESP_LOGI(TAG, "GPS time updated: %04d-%02d-%02d %02d:%02d:%02d UTC", 
-             val.year, val.month, val.day_of_month, 
-             val.hour, val.minute, val.second);
-    ESP_LOGD(TAG, "Precise time recorded: Epoch=%lu, Micros=%u", 
-             (unsigned long)val.timestamp, this->last_epoch_micros_);
-  } else {
-    ESP_LOGW(TAG, "Invalid GPS time received");
-  }
+  ESP_LOGD(TAG, "Precise time recorded: Epoch=%lu, Micros=%u", 
+           (unsigned long)val.timestamp, this->last_epoch_micros_);
 }
-
 
 }  // namespace custom_gps_time
 }  // namespace esphome
