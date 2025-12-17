@@ -1,3 +1,4 @@
+[file content begin]
 #include "simple_gps_ntp.h"
 #include "esphome/components/network/util.h"
 
@@ -5,9 +6,6 @@ namespace esphome {
 namespace simple_gps_ntp {
 
 SimpleGPSNTPServer *SimpleGPSNTPServer::instance_ = nullptr;
-
-// 添加常量定义
-const uint32_t NTP_TIMESTAMP_DELTA = 2208988800UL;  // 1900-1970的秒数差
 
 void IRAM_ATTR SimpleGPSNTPServer::pps_isr() {
   if (SimpleGPSNTPServer::instance_) {
@@ -20,8 +18,10 @@ void IRAM_ATTR SimpleGPSNTPServer::pps_isr() {
 void SimpleGPSNTPServer::setup() {
   ESP_LOGI("SimpleNTP", "Initializing Simple GPS NTP Server");
   
+  // 设置实例指针
   instance_ = this;
   
+  // 配置PPS引脚
   if (pps_pin_ > 0) {
     pinMode(pps_pin_, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(pps_pin_), 
@@ -30,25 +30,20 @@ void SimpleGPSNTPServer::setup() {
     ESP_LOGI("SimpleNTP", "PPS on GPIO %d", pps_pin_);
   }
   
+  // 初始化GPS缓冲区
   memset(gps_buffer_, 0, sizeof(gps_buffer_));
   gps_idx_ = 0;
-  
-  // 初始化时间校准
-  time_calibration_ = 0.0f;
   
   // 启动NTP服务器
   if (!ntp_started_) {
     udp_.begin(123);
     ntp_started_ = true;
-    ESP_LOGI("SimpleNTP", "NTP server started on port 123");
+    ESP_LOGI("SimpleNTP", "NTP server started");
   }
   
-  // 检查系统时间
-  time_t now;
-  time(&now);
-  if (now < 1609459200) { // 早于2021年
-    ESP_LOGW("SimpleNTP", "System time not set: %ld", now);
-  }
+  // 初始化系统时间为GPS时间（等待GPS同步）
+  gps_valid_ = false;
+  time_calibration_ = 0.0f;
 }
 
 void SimpleGPSNTPServer::parse_gps() {
@@ -73,88 +68,97 @@ void SimpleGPSNTPServer::parse_gps() {
         gps_buffer_[gps_idx_] = 0;
         
         if (c == '\n') {
-          if (strstr(gps_buffer_, "$GPRMC") || strstr(gps_buffer_, "$GNRMC")) {
-            // 解析RMC语句（包含日期和时间）
+          // 检查是否有RMC或GGA语句
+          if (strstr(gps_buffer_, "$GPRMC") || strstr(gps_buffer_, "$GNRMC") || 
+              strstr(gps_buffer_, "$GPGGA") || strstr(gps_buffer_, "$GNGGA")) {
+            
             char *ptr = gps_buffer_;
             int field_count = 0;
-            char time_str[16] = {0};
-            char date_str[16] = {0};
+            
+            // 解析日期和时间
+            uint8_t hour = 0, minute = 0, second = 0;
+            uint8_t day = 0, month = 0;
+            uint16_t year = 0;
+            bool has_date = false;
+            bool has_time = false;
             
             while (*ptr) {
               if (*ptr == ',') {
                 field_count++;
+                
+                // 解析时间 (字段2)
                 if (field_count == 2) {
-                  // 时间字段 HHMMSS.sss
                   ptr++;
+                  char time_str[16];
                   int j = 0;
+                  
                   while (*ptr != ',' && *ptr != '.' && *ptr != '\0' && j < 15) {
                     time_str[j++] = *ptr++;
                   }
                   time_str[j] = 0;
+                  
+                  if (strlen(time_str) == 6) {
+                    hour = (time_str[0] - '0') * 10 + (time_str[1] - '0');
+                    minute = (time_str[2] - '0') * 10 + (time_str[3] - '0');
+                    second = (time_str[4] - '0') * 10 + (time_str[5] - '0');
+                    has_time = true;
+                  }
                 }
-                else if (field_count == 10) {
-                  // 日期字段 DDMMYY
+                
+                // 解析日期 (字段10，在RMC语句中)
+                if ((strstr(gps_buffer_, "$GPRMC") || strstr(gps_buffer_, "$GNRMC")) && field_count == 10) {
                   ptr++;
+                  char date_str[16];
                   int j = 0;
+                  
                   while (*ptr != ',' && *ptr != '\0' && j < 15) {
                     date_str[j++] = *ptr++;
                   }
                   date_str[j] = 0;
+                  
+                  if (strlen(date_str) == 6) {
+                    day = (date_str[0] - '0') * 10 + (date_str[1] - '0');
+                    month = (date_str[2] - '0') * 10 + (date_str[3] - '0');
+                    year = (date_str[4] - '0') * 10 + (date_str[5] - '0') + 2000;
+                    has_date = true;
+                  }
                 }
               }
               ptr++;
             }
             
-            // 如果有时间和日期，尝试设置系统时间
-            if (strlen(time_str) == 6 && strlen(date_str) == 6) {
-              // 解析时间
-              int hour = (time_str[0] - '0') * 10 + (time_str[1] - '0');
-              int minute = (time_str[2] - '0') * 10 + (time_str[3] - '0');
-              int second = (time_str[4] - '0') * 10 + (time_str[5] - '0');
+            // 如果获取到完整的时间信息，更新系统时间
+            if (has_time) {
+              gps_hour_ = hour;
+              gps_minute_ = minute;
+              gps_second_ = second;
               
-              // 解析日期
-              int day = (date_str[0] - '0') * 10 + (date_str[1] - '0');
-              int month = (date_str[2] - '0') * 10 + (date_str[3] - '0');
-              int year = (date_str[4] - '0') * 10 + (date_str[5] - '0') + 2000;
-              
-              // 构建tm结构（UTC时间）
-              struct tm gps_tm;
-              memset(&gps_tm, 0, sizeof(gps_tm));
-              gps_tm.tm_year = year - 1900;
-              gps_tm.tm_mon = month - 1;
-              gps_tm.tm_mday = day;
-              gps_tm.tm_hour = hour;
-              gps_tm.tm_min = minute;
-              gps_tm.tm_sec = second;
-              gps_tm.tm_isdst = 0;
-              
-              // 直接使用mktime，假设系统时区为UTC
-              // 在ESP32上，默认时区通常是UTC，或者可以通过环境变量设置
-              time_t gps_time = mktime(&gps_tm);
-              
-              // 获取当前系统时间
-              time_t now;
-              time(&now);
-              
-              // 如果时间差大于10秒，则设置系统时间
-              if (abs(gps_time - now) > 10) {
-                struct timeval tv;
-                tv.tv_sec = gps_time;
-                tv.tv_usec = 0;
-                settimeofday(&tv, NULL);
+              if (has_date) {
+                // 设置系统时间
+                struct tm timeinfo = {0};
+                timeinfo.tm_year = year - 1900;
+                timeinfo.tm_mon = month - 1;
+                timeinfo.tm_mday = day;
+                timeinfo.tm_hour = hour;
+                timeinfo.tm_min = minute;
+                timeinfo.tm_sec = second;
                 
-                // 同时更新内部GPS时间记录
-                gps_hour_ = hour;
-                gps_minute_ = minute;
-                gps_second_ = second;
+                time_t epoch = mktime(&timeinfo);
+                struct timeval tv = {epoch, 0};
+                
+                // 检查时间是否合理（晚于2020年）
+                if (epoch > 1577836800) {
+                  settimeofday(&tv, NULL);
+                  gps_valid_ = true;
+                  
+                  ESP_LOGI("SimpleNTP", "GPS时间已设置: %04d-%02d-%02d %02d:%02d:%02d UTC",
+                           year, month, day, hour, minute, second);
+                }
+              } else {
+                // 只有时间没有日期，只记录时间
                 gps_valid_ = true;
-                
-                ESP_LOGI("SimpleNTP", "System time set from GPS: %04d-%02d-%02d %02d:%02d:%02d UTC",
-                         year, month, day, hour, minute, second);
+                ESP_LOGD("SimpleNTP", "GPS时间: %02d:%02d:%02d UTC", hour, minute, second);
               }
-              
-              ESP_LOGI("SimpleNTP", "GPS time: %02d:%02d:%02d, date: %04d-%02d-%02d UTC", 
-                       hour, minute, second, year, month, day);
             }
           }
           gps_idx_ = 0;
@@ -179,75 +183,63 @@ void SimpleGPSNTPServer::handle_pps() {
     uint32_t interval_us = (now_us - last_pps_us_) & 0xFFFFFFFFUL;
     
     if (interval_us > 900000 && interval_us < 1100000) {
-      ESP_LOGD("SimpleNTP", "PPS #%u, interval: %.6f s", pps_count_, interval_us / 1000000.0f);
+      ESP_LOGD("SimpleNTP", "PPS #%u, 间隔: %.6f秒", pps_count_, interval_us / 1000000.0f);
+      
+      // PPS发生时记录精确时间
+      if (gps_valid_) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        
+        // PPS应该发生在整秒时刻，调整微秒部分
+        tv.tv_usec = 0;
+        tv.tv_sec++; // 下一个整秒
+        
+        // 更新系统时间（如果需要）
+        // settimeofday(&tv, NULL);
+      }
     } else {
-      ESP_LOGW("SimpleNTP", "PPS abnormal interval: %u us", interval_us);
+      ESP_LOGW("SimpleNTP", "PPS间隔异常: %u us", interval_us);
     }
   }
 }
 
-// 辅助函数：将tm结构转换为UTC时间（忽略时区）
-time_t tm_to_utc(const struct tm *tm) {
-  // 使用简单的算法计算UTC时间
-  // 这个算法假设输入是UTC时间
-  static const int days_per_month[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  
-  // 计算年份
-  int year = tm->tm_year + 1900;
-  time_t days = 0;
-  
-  // 1970年之前的天数
-  for (int y = 1970; y < year; y++) {
-    days += 365;
-    if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) {
-      days++; // 闰年
-    }
-  }
-  
-  // 当年的月份天数
-  for (int m = 0; m < tm->tm_mon; m++) {
-    days += days_per_month[m];
-    if (m == 1 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
-      days++; // 闰年的二月
-    }
-  }
-  
-  // 当月天数
-  days += (tm->tm_mday - 1);
-  
-  // 转换为秒数
-  time_t seconds = days * 24 * 3600;
-  seconds += tm->tm_hour * 3600;
-  seconds += tm->tm_min * 60;
-  seconds += tm->tm_sec;
-  
-  return seconds;
-}
-
-bool SimpleGPSNTPServer::get_ntp_time(uint32_t &seconds, uint32_t &fraction, uint32_t recv_sec, uint32_t recv_frac) {
-  // 获取当前系统时间
+bool SimpleGPSNTPServer::get_ntp_time(uint32_t &seconds, uint32_t &fraction) {
   struct timeval tv;
   gettimeofday(&tv, NULL);
   
-  uint32_t base_seconds = tv.tv_sec;
-  uint32_t base_micros = tv.tv_usec;
+  // 如果系统时间太早（小于2020年），说明未同步，返回错误
+  if (tv.tv_sec < 1577836800) {
+    ESP_LOGW("SimpleNTP", "系统时间未同步: %u", tv.tv_sec);
+    return false;
+  }
+  
+  // Unix时间（1970年1月1日）转换为NTP时间（1900年1月1日）
+  // NTP时间 = Unix时间 + 2208988800
+  seconds = tv.tv_sec + 2208988800UL;
+  
+  // 微秒转换为2^-32秒的分数部分
+  fraction = (uint32_t)((uint64_t)tv.tv_usec * 4294967296ULL / 1000000ULL);
   
   // 应用PPS微调
-  if (pps_count_ > 0 && last_pps_us_ > 0) {
+  if (pps_count_ > 0) {
     uint32_t now_us = micros();
     uint32_t offset_us = (now_us - last_pps_us_) & 0xFFFFFFFFUL;
     
     if (offset_us < 1100000) {
-      base_micros = offset_us;
-      ESP_LOGD("SimpleNTP", "PPS adjusted: offset=%uus", offset_us);
+      // 使用PPS进行更精确的微秒调整
+      uint32_t pps_micros = offset_us % 1000000;
+      fraction = (uint32_t)((uint64_t)pps_micros * 4294967296ULL / 1000000ULL);
+      
+      // 如果PPS发生在上一秒，调整秒数
+      if (offset_us >= 1000000) {
+        seconds += offset_us / 1000000UL;
+      }
+      
+      ESP_LOGD("SimpleNTP", "PPS微调: 偏移=%uus, 分数=%u", offset_us, fraction);
     }
   }
   
-  // 转换为NTP时间（基准1900年）
-  seconds = base_seconds + NTP_TIMESTAMP_DELTA;
-  fraction = (base_micros * 4294967296UL) / 1000000UL;
-  
-  return true;
+  return gps_valid_ || (pps_count_ > 0);
 }
 
 void SimpleGPSNTPServer::handle_ntp() {
@@ -260,93 +252,103 @@ void SimpleGPSNTPServer::handle_ntp() {
     IPAddress remote = udp_.remoteIP();
     int remotePort = udp_.remotePort();
     
-    // 记录接收时间戳（在收到包后立即获取）
-    struct timeval tv_recv;
-    gettimeofday(&tv_recv, NULL);
-    uint32_t recv_seconds = tv_recv.tv_sec + NTP_TIMESTAMP_DELTA;
-    uint32_t recv_fraction = (tv_recv.tv_usec * 4294967296UL) / 1000000UL;
+    ESP_LOGI("SimpleNTP", "NTP请求来自: %s:%d", remote.toString().c_str(), remotePort);
     
-    ESP_LOGD("SimpleNTP", "NTP request from: %s:%d", remote.toString().c_str(), remotePort);
+    // 获取当前时间
+    uint32_t ntp_seconds, ntp_fraction;
+    bool high_precision = get_ntp_time(ntp_seconds, ntp_fraction);
     
-    // 获取传输时间戳
-    uint32_t tx_seconds, tx_fraction;
-    get_ntp_time(tx_seconds, tx_fraction, recv_seconds, recv_fraction);
+    if (!high_precision && !gps_valid_) {
+      ESP_LOGW("SimpleNTP", "时间未同步，不响应NTP请求");
+      return;
+    }
     
     // 构建响应包
     memset(packet, 0, 48);
     
-    // NTP头部
-    packet[0] = 0b00100100;  // LI=0, Version=4, Mode=4 (server)
-    packet[1] = 1;           // Stratum 1 (primary reference)
-    packet[2] = 6;           // Poll interval: 64 seconds
-    packet[3] = 0xFA;        // Precision: ~15.6 ms
+    // LI = 0 (无警告), Version = 4, Mode = 4 (服务器)
+    packet[0] = 0x24;
     
-    // Root delay (0.0000 seconds)
-    packet[4] = 0x00;
-    packet[5] = 0x00;
-    packet[6] = 0x00;
-    packet[7] = 0x00;
+    // Stratum: 1表示一级时间服务器
+    packet[1] = high_precision ? 1 : 2;
     
-    // Root dispersion (0.0000 seconds)
-    packet[8] = 0x00;
-    packet[9] = 0x00;
-    packet[10] = 0x00;
-    packet[11] = 0x00;
+    // Poll interval
+    packet[2] = 4; // 16秒
     
-    // Reference identifier (使用GPS)
+    // Precision: 2^-8 ≈ 3.9ms
+    packet[3] = 0xE8;
+    
+    // Root Delay (0)
+    packet[4] = 0;
+    packet[5] = 0;
+    packet[6] = 0;
+    packet[7] = 0;
+    
+    // Root Dispersion (0.5秒，固定点小数表示)
+    packet[8] = 0;
+    packet[9] = 0;
+    packet[10] = 0x80;
+    packet[11] = 0;
+    
+    // Reference Identifier (自定义标识)
     packet[12] = 'G';
     packet[13] = 'P';
     packet[14] = 'S';
-    packet[15] = '0';
+    packet[15] = 'N';
     
-    // Reference timestamp (使用当前系统时间)
-    uint32_t ref_seconds, ref_fraction;
-    get_ntp_time(ref_seconds, ref_fraction, recv_seconds, recv_fraction);
+    // Reference Timestamp (参考时间戳，使用当前时间)
+    uint32_t ref_seconds = ntp_seconds;
+    uint32_t ref_fraction = ntp_fraction;
     
-    // 写入参考时间戳
+    // 大端序存储
     packet[16] = (ref_seconds >> 24) & 0xFF;
     packet[17] = (ref_seconds >> 16) & 0xFF;
     packet[18] = (ref_seconds >> 8) & 0xFF;
     packet[19] = ref_seconds & 0xFF;
-    
     packet[20] = (ref_fraction >> 24) & 0xFF;
     packet[21] = (ref_fraction >> 16) & 0xFF;
     packet[22] = (ref_fraction >> 8) & 0xFF;
     packet[23] = ref_fraction & 0xFF;
     
-    // Originate timestamp (复制客户端的时间戳)
+    // Originate Timestamp (复制客户端发送时间)
     for (int i = 0; i < 8; i++) {
       packet[24 + i] = packet[40 + i];
     }
     
-    // Receive timestamp (记录收到请求的时间)
-    packet[32] = (recv_seconds >> 24) & 0xFF;
-    packet[33] = (recv_seconds >> 16) & 0xFF;
-    packet[34] = (recv_seconds >> 8) & 0xFF;
-    packet[35] = recv_seconds & 0xFF;
+    // Receive Timestamp (接收时间)
+    packet[32] = (ntp_seconds >> 24) & 0xFF;
+    packet[33] = (ntp_seconds >> 16) & 0xFF;
+    packet[34] = (ntp_seconds >> 8) & 0xFF;
+    packet[35] = ntp_seconds & 0xFF;
+    packet[36] = (ntp_fraction >> 24) & 0xFF;
+    packet[37] = (ntp_fraction >> 16) & 0xFF;
+    packet[38] = (ntp_fraction >> 8) & 0xFF;
+    packet[39] = ntp_fraction & 0xFF;
     
-    packet[36] = (recv_fraction >> 24) & 0xFF;
-    packet[37] = (recv_fraction >> 16) & 0xFF;
-    packet[38] = (recv_fraction >> 8) & 0xFF;
-    packet[39] = recv_fraction & 0xFF;
-    
-    // Transmit timestamp (发送时间)
-    packet[40] = (tx_seconds >> 24) & 0xFF;
-    packet[41] = (tx_seconds >> 16) & 0xFF;
-    packet[42] = (tx_seconds >> 8) & 0xFF;
-    packet[43] = tx_seconds & 0xFF;
-    
-    packet[44] = (tx_fraction >> 24) & 0xFF;
-    packet[45] = (tx_fraction >> 16) & 0xFF;
-    packet[46] = (tx_fraction >> 8) & 0xFF;
-    packet[47] = tx_fraction & 0xFF;
+    // Transmit Timestamp (发送时间，与接收时间相同)
+    packet[40] = (ntp_seconds >> 24) & 0xFF;
+    packet[41] = (ntp_seconds >> 16) & 0xFF;
+    packet[42] = (ntp_seconds >> 8) & 0xFF;
+    packet[43] = ntp_seconds & 0xFF;
+    packet[44] = (ntp_fraction >> 24) & 0xFF;
+    packet[45] = (ntp_fraction >> 16) & 0xFF;
+    packet[46] = (ntp_fraction >> 8) & 0xFF;
+    packet[47] = ntp_fraction & 0xFF;
     
     // 发送响应
     udp_.beginPacket(remote, remotePort);
     udp_.write(packet, 48);
     udp_.endPacket();
     
-    ESP_LOGD("SimpleNTP", "NTP response sent to %s", remote.toString().c_str());
+    // 调试信息
+    time_t unix_time = ntp_seconds - 2208988800UL;
+    struct tm *tm_info = gmtime(&unix_time);
+    
+    ESP_LOGI("SimpleNTP", 
+             "NTP响应: 时间=%04d-%02d-%02d %02d:%02d:%02d UTC, GPS=%s, PPS=%u",
+             tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
+             gps_valid_ ? "YES" : "NO", pps_count_);
   }
 }
 
@@ -366,7 +368,19 @@ void SimpleGPSNTPServer::dump_config() {
   ESP_LOGCONFIG("SimpleNTP", "  PPS Pin: %d", pps_pin_);
   ESP_LOGCONFIG("SimpleNTP", "  GPS Valid: %s", gps_valid_ ? "YES" : "NO");
   ESP_LOGCONFIG("SimpleNTP", "  PPS Count: %u", pps_count_);
-  ESP_LOGCONFIG("SimpleNTP", "  GPS Time: %02d:%02d:%02d UTC", gps_hour_, gps_minute_, gps_second_);
+  
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  struct tm *tm_info = gmtime(&tv.tv_sec);
+  
+  ESP_LOGCONFIG("SimpleNTP", "  系统时间: %04d-%02d-%02d %02d:%02d:%02d UTC",
+               tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+               tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+  
+  if (gps_valid_) {
+    ESP_LOGCONFIG("SimpleNTP", "  GPS时间: %02d:%02d:%02d UTC", 
+                 gps_hour_, gps_minute_, gps_second_);
+  }
 }
 
 }  // namespace simple_gps_ntp
