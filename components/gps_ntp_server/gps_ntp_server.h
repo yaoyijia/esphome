@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include "esphome.h"
@@ -43,6 +42,8 @@ class GPSNTPServer : public Component {
   // NMEA解析函数
   bool parse_gprmc(const char *data);
   bool parse_gpgga(const char *data);
+  bool parse_gnzda(const char *data);  // 添加ZDA解析
+  void update_system_time();           // 添加系统时间更新函数
   
   static void IRAM_ATTR pps_interrupt_handler();
   
@@ -86,4 +87,3 @@ class GPSNTPServer : public Component {
 
 }  // namespace gps_ntp_server
 }  // namespace esphome
-
