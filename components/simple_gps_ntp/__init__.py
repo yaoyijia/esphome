@@ -1,3 +1,4 @@
+
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import uart
@@ -10,13 +11,14 @@ SimpleGPSNTPServer = simple_gps_ntp_ns.class_('SimpleGPSNTPServer', cg.Component
 
 CONF_PPS_PIN = 'pps_pin'
 CONF_UART_ID = 'uart_id'
+CONF_DEBUG_LEVEL = 'debug_level'
 
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(SimpleGPSNTPServer),
     cv.Required(CONF_PPS_PIN): cv.int_range(min=0, max=35),
     
-    # 可选：指定特定的UART组件
     cv.Optional(CONF_UART_ID): cv.use_id(uart.UARTComponent),
+    cv.Optional(CONF_DEBUG_LEVEL, default=1): cv.int_range(min=0, max=3),
 }).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config):
@@ -25,11 +27,8 @@ async def to_code(config):
     
     cg.add(var.set_pps_pin(config[CONF_PPS_PIN]))
     
-    # 如果指定了特定的UART组件，使用它
     if CONF_UART_ID in config:
         uart_component = await cg.get_variable(config[CONF_UART_ID])
         cg.add(var.set_uart(uart_component))
-    else:
-        # 否则，使用默认的UART组件
-        # 需要确保配置中有uart组件
-        pass
+    
+    cg.add(var.set_debug_level(config[CONF_DEBUG_LEVEL]))
