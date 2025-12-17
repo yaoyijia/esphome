@@ -28,7 +28,7 @@ void GPSNTPServer::setup() {
     pinMode(pps_pin_, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(pps_pin_), 
                    pps_interrupt_handler, 
-                   RISING);
+                   FALLING);
     ESP_LOGI("gps_ntp", "PPS引脚配置在GPIO %d", pps_pin_);
   }
   
