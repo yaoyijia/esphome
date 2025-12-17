@@ -84,6 +84,8 @@ void GPSNTPServer::on_update(TinyGPSPlus &tiny_gps) {
 
 // ==================== PPS处理 ====================
 void GPSNTPServer::handle_pps() {
+  static uint32_t last_pps_count = 0;
+  
   if (pps_triggered_) {
     pps_triggered_ = false;
     pps_active_ = true;
@@ -94,9 +96,23 @@ void GPSNTPServer::handle_pps() {
     
     // 检查PPS间隔是否稳定（900ms-1100ms）
     if (interval_us > 900000 && interval_us < 1100000) {
-      if (pps_count_ % 60 == 0) {  // 每分钟输出一次
-        ESP_LOGD("gps_ntp", "PPS #%u, 间隔: %.3fms", 
-                 pps_count_, interval_us / 1000.0f);
+      if (pps_count_ > last_pps_count) {
+        last_pps_count = pps_count_;
+        
+        if (pps_count_ % 60 == 0) {  // 每分钟输出一次
+          ESP_LOGD("gps_ntp", "PPS #%u, 间隔: %.3fms", 
+                   pps_count_, interval_us / 1000.0f);
+        }
+        
+        // 关键：PPS发生时，系统时间的秒部分应该是整数
+        struct timeval tv;
+        gettimeofday(&tv, nullptr);
+        
+        // 如果系统时间的微秒部分不是接近0，可能需要调整
+        if (tv.tv_usec > 500000) {
+          // PPS发生在秒的开始，微秒应该是0
+          // 但我们不自动调整，让GPS时间决定
+        }
       }
     } else {
       ESP_LOGW("gps_ntp", "PPS间隔异常: %.3fms", interval_us / 1000.0f);
@@ -117,7 +133,7 @@ uint8_t GPSNTPServer::get_time_quality() const {
   return QUALITY_SYSTEM;
 }
 
-// ==================== NTP请求处理（完整微秒精度） ====================
+// ==================== NTP请求处理（修复秒边界错误） ====================
 void GPSNTPServer::process_ntp() {
   int packetSize = udp_.parsePacket();
   if (packetSize >= 48) {
@@ -145,19 +161,21 @@ void GPSNTPServer::process_ntp() {
     // 计算NTP分数部分（微秒转换为2^32分数）
     uint64_t ntp_fraction = (uint64_t)tv.tv_usec * 4294967296ULL / 1000000ULL;
     
-    // PPS微秒级校准
+    // ========== 关键修复：PPS微秒校准（无秒边界调整） ==========
     if (pps_active_ && pps_count_ > 0) {
       uint32_t now_us = micros();
       uint32_t since_pps = (now_us - pps_last_edge_us_) & 0xFFFFFFFFUL;
       
-      if (since_pps < 1100000) {  // 合理范围内
-        uint32_t pps_micros = since_pps % 1000000UL;
+      // 只使用PPS提供当前秒内的微秒计数
+      // 永远不增加秒数，秒数由系统时间决定
+      if (since_pps < 1000000) {  // 在当前秒内
+        uint32_t pps_micros = since_pps;
         ntp_fraction = (uint64_t)pps_micros * 4294967296ULL / 1000000ULL;
         
-        if (since_pps >= 1000000) {
-          ntp_seconds += since_pps / 1000000UL;
-        }
+        ESP_LOGD("gps_ntp", "PPS校准: 微秒=%u, 分数=%llu", 
+                 pps_micros, ntp_fraction);
       }
+      // 如果since_pps >= 1000000，说明PPS信号可能有问题，不使用PPS校准
     }
     
     // 根据时间质量设置stratum
@@ -208,10 +226,11 @@ void GPSNTPServer::process_ntp() {
     packetBuffer[14] = 'S';
     packetBuffer[15] = 'N';
     
-    // Reference Timestamp（包括微秒）
+    // ========== 时间戳设置 ==========
     uint32_t ref_seconds = (uint32_t)ntp_seconds;
     uint32_t ref_fraction = (uint32_t)ntp_fraction;
     
+    // Reference Timestamp
     packetBuffer[16] = (ref_seconds >> 24) & 0xFF;
     packetBuffer[17] = (ref_seconds >> 16) & 0xFF;
     packetBuffer[18] = (ref_seconds >> 8) & 0xFF;
@@ -227,7 +246,7 @@ void GPSNTPServer::process_ntp() {
       packetBuffer[24 + i] = clientTransmit[i];
     }
     
-    // Receive Timestamp（包括微秒）
+    // Receive Timestamp
     packetBuffer[32] = (ref_seconds >> 24) & 0xFF;
     packetBuffer[33] = (ref_seconds >> 16) & 0xFF;
     packetBuffer[34] = (ref_seconds >> 8) & 0xFF;
@@ -238,7 +257,7 @@ void GPSNTPServer::process_ntp() {
     packetBuffer[38] = (ref_fraction >> 8) & 0xFF;
     packetBuffer[39] = ref_fraction & 0xFF;
     
-    // Transmit Timestamp（包括微秒）
+    // Transmit Timestamp
     packetBuffer[40] = (ref_seconds >> 24) & 0xFF;
     packetBuffer[41] = (ref_seconds >> 16) & 0xFF;
     packetBuffer[42] = (ref_seconds >> 8) & 0xFF;
@@ -254,16 +273,34 @@ void GPSNTPServer::process_ntp() {
     udp_.write(packetBuffer, 48);
     udp_.endPacket();
     
-    // 记录日志
-    if (ntp_requests_ % 10 == 0 || ntp_requests_ == 1) {
+    // 记录日志（显示详细时间信息）
+    static uint32_t last_log_time = 0;
+    uint32_t now = millis();
+    if (now - last_log_time > 1000) {  // 每秒最多记录一次
+      last_log_time = now;
+      
       time_t unix_time = ref_seconds - seventyYears;
       struct tm *tm_info = gmtime(&unix_time);
       
-      ESP_LOGI("gps_ntp", "NTP响应 #%u: %s:%d, UTC=%02d:%02d:%02d.%06u, 质量=%d",
-               ntp_requests_, remote.toString().c_str(), remotePort,
-               tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
-               (uint32_t)((uint64_t)ref_fraction * 1000000ULL / 4294967296ULL),
-               quality);
+      uint32_t microseconds = (uint64_t)ref_fraction * 1000000ULL / 4294967296ULL;
+      
+      // 解码客户端的Transmit Timestamp
+      uint32_t client_seconds = (clientTransmit[0] << 24) | 
+                                (clientTransmit[1] << 16) | 
+                                (clientTransmit[2] << 8) | 
+                                clientTransmit[3];
+      uint32_t client_fraction = (clientTransmit[4] << 24) | 
+                                 (clientTransmit[5] << 16) | 
+                                 (clientTransmit[6] << 8) | 
+                                 clientTransmit[7];
+      uint32_t client_micros = (uint64_t)client_fraction * 1000000ULL / 4294967296ULL;
+      time_t client_unix_time = client_seconds - seventyYears;
+      struct tm *client_tm = gmtime(&client_unix_time);
+      
+      ESP_LOGI("gps_ntp", "NTP响应: 客户端=%02d:%02d:%02d.%06u, 服务器=%02d:%02d:%02d.%06u, 差值=%.3fms",
+               client_tm->tm_hour, client_tm->tm_min, client_tm->tm_sec, client_micros,
+               tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, microseconds,
+               (microseconds - client_micros) / 1000.0f);
     }
   }
 }
