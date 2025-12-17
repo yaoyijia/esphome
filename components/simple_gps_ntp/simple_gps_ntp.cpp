@@ -44,14 +44,10 @@ void SimpleGPSNTPServer::setup() {
   }
   
   // 检查系统时间
-  time_t now = time(nullptr);
+  time_t now;
+  time(&now);
   if (now < 1609459200) { // 早于2021年
     ESP_LOGW("SimpleNTP", "System time not set: %ld", now);
-    // 设置一个合理的时间（2024年1月1日），避免NTP时间太小
-    struct timeval tv;
-    tv.tv_sec = 1704067200;  // 2024-01-01 00:00:00
-    tv.tv_usec = 0;
-    settimeofday(&tv, NULL);
   }
 }
 
@@ -121,7 +117,7 @@ void SimpleGPSNTPServer::parse_gps() {
               int month = (date_str[2] - '0') * 10 + (date_str[3] - '0');
               int year = (date_str[4] - '0') * 10 + (date_str[5] - '0') + 2000;
               
-              // 构建tm结构
+              // 构建tm结构（UTC时间）
               struct tm gps_tm;
               memset(&gps_tm, 0, sizeof(gps_tm));
               gps_tm.tm_year = year - 1900;
@@ -132,11 +128,13 @@ void SimpleGPSNTPServer::parse_gps() {
               gps_tm.tm_sec = second;
               gps_tm.tm_isdst = 0;
               
-              // 转换为time_t
-              time_t gps_time = mktime(&gps_tm) - timezone;  // 转换为UTC
+              // 直接使用mktime，假设系统时区为UTC
+              // 在ESP32上，默认时区通常是UTC，或者可以通过环境变量设置
+              time_t gps_time = mktime(&gps_tm);
               
               // 获取当前系统时间
-              time_t now = time(nullptr);
+              time_t now;
+              time(&now);
               
               // 如果时间差大于10秒，则设置系统时间
               if (abs(gps_time - now) > 10) {
@@ -144,17 +142,18 @@ void SimpleGPSNTPServer::parse_gps() {
                 tv.tv_sec = gps_time;
                 tv.tv_usec = 0;
                 settimeofday(&tv, NULL);
+                
+                // 同时更新内部GPS时间记录
+                gps_hour_ = hour;
+                gps_minute_ = minute;
+                gps_second_ = second;
+                gps_valid_ = true;
+                
                 ESP_LOGI("SimpleNTP", "System time set from GPS: %04d-%02d-%02d %02d:%02d:%02d UTC",
                          year, month, day, hour, minute, second);
               }
               
-              // 记录GPS时间
-              gps_hour_ = hour;
-              gps_minute_ = minute;
-              gps_second_ = second;
-              gps_valid_ = true;
-              
-              ESP_LOGI("SimpleNTP", "GPS time: %02d:%02d:%02d, date: %04d-%02d-%02d", 
+              ESP_LOGI("SimpleNTP", "GPS time: %02d:%02d:%02d, date: %04d-%02d-%02d UTC", 
                        hour, minute, second, year, month, day);
             }
           }
@@ -185,6 +184,44 @@ void SimpleGPSNTPServer::handle_pps() {
       ESP_LOGW("SimpleNTP", "PPS abnormal interval: %u us", interval_us);
     }
   }
+}
+
+// 辅助函数：将tm结构转换为UTC时间（忽略时区）
+time_t tm_to_utc(const struct tm *tm) {
+  // 使用简单的算法计算UTC时间
+  // 这个算法假设输入是UTC时间
+  static const int days_per_month[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  
+  // 计算年份
+  int year = tm->tm_year + 1900;
+  time_t days = 0;
+  
+  // 1970年之前的天数
+  for (int y = 1970; y < year; y++) {
+    days += 365;
+    if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) {
+      days++; // 闰年
+    }
+  }
+  
+  // 当年的月份天数
+  for (int m = 0; m < tm->tm_mon; m++) {
+    days += days_per_month[m];
+    if (m == 1 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
+      days++; // 闰年的二月
+    }
+  }
+  
+  // 当月天数
+  days += (tm->tm_mday - 1);
+  
+  // 转换为秒数
+  time_t seconds = days * 24 * 3600;
+  seconds += tm->tm_hour * 3600;
+  seconds += tm->tm_min * 60;
+  seconds += tm->tm_sec;
+  
+  return seconds;
 }
 
 bool SimpleGPSNTPServer::get_ntp_time(uint32_t &seconds, uint32_t &fraction, uint32_t recv_sec, uint32_t recv_frac) {
@@ -329,7 +366,7 @@ void SimpleGPSNTPServer::dump_config() {
   ESP_LOGCONFIG("SimpleNTP", "  PPS Pin: %d", pps_pin_);
   ESP_LOGCONFIG("SimpleNTP", "  GPS Valid: %s", gps_valid_ ? "YES" : "NO");
   ESP_LOGCONFIG("SimpleNTP", "  PPS Count: %u", pps_count_);
-  ESP_LOGCONFIG("SimpleNTP", "  GPS Time: %02d:%02d:%02d", gps_hour_, gps_minute_, gps_second_);
+  ESP_LOGCONFIG("SimpleNTP", "  GPS Time: %02d:%02d:%02d UTC", gps_hour_, gps_minute_, gps_second_);
 }
 
 }  // namespace simple_gps_ntp
