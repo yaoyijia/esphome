@@ -1,5 +1,4 @@
-[file name]: gps_ntp_server.h
-[file content begin]
+
 #pragma once
 
 #include "esphome.h"
@@ -73,4 +72,3 @@ class GPSNTPServer : public Component, public gps::GPSListener {
 
 }  // namespace gps_ntp_server
 }  // namespace esphome
-[file content end]
