@@ -1,5 +1,4 @@
-[file name]: gps_ntp_server.cpp
-[file content begin]
+
 #include "gps_ntp_server.h"
 #include "esphome/components/network/util.h"
 #include <sys/time.h>
@@ -292,4 +291,4 @@ void GPSNTPServer::dump_config() {
 
 }  // namespace gps_ntp_server
 }  // namespace esphome
-[file content end]
+
