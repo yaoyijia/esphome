@@ -24,10 +24,10 @@ class GPSNTPServer : public Component, public gps::GPSListener {
   void dump_config() override;
   
   // GPSListener接口
-  void on_update(TinyGPSPlus &tiny_gps) override;  // 注意参数类型！
+  void on_update(TinyGPSPlus &tiny_gps) override;
   
   // 状态查询
-  bool is_gps_valid() const { return gps_valid_; }
+  bool is_gps_valid() const { return time_valid_; }
   bool is_pps_active() const { return pps_active_; }
   uint32_t get_pps_count() const { return pps_count_; }
   uint8_t get_time_quality() const;
@@ -49,20 +49,35 @@ class GPSNTPServer : public Component, public gps::GPSListener {
   gps::GPS *gps_ = nullptr;
   uint8_t pps_pin_ = 0;
   
-  // PPS相关
+  // GPS时间数据
+  struct {
+    uint16_t year = 0;
+    uint8_t month = 0;
+    uint8_t day = 0;
+    uint8_t hour = 0;
+    uint8_t minute = 0;
+    uint8_t second = 0;
+    bool valid = false;
+    uint32_t last_update = 0;
+  } gps_time_;
+  
+  // PPS数据
   volatile uint32_t pps_last_edge_us_ = 0;
   volatile uint32_t pps_count_ = 0;
   volatile bool pps_triggered_ = false;
   bool pps_active_ = false;
   uint32_t pps_last_stable_ = 0;
   
+  // 时间状态
+  bool time_valid_ = false;
+  uint32_t last_pps_sync_ = 0;
+  uint32_t last_pps_second_ = 0;
+  
   // NTP服务器
   WiFiUDP udp_;
   bool ntp_started_ = false;
   
-  // 状态
-  bool gps_valid_ = false;
-  uint32_t last_gps_update_ = 0;
+  // 统计
   uint32_t last_loop_ = 0;
   uint32_t ntp_requests_ = 0;
   
@@ -72,3 +87,4 @@ class GPSNTPServer : public Component, public gps::GPSListener {
 
 }  // namespace gps_ntp_server
 }  // namespace esphome
+
