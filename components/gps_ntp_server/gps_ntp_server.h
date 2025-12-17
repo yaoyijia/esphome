@@ -45,12 +45,12 @@ class GPSNTPServer : public Component, public gps::GPSListener {
   void handle_pps();
   static void IRAM_ATTR pps_interrupt_handler();
   
- private:
+private:
   gps::GPS *gps_ = nullptr;
   uint8_t pps_pin_ = 0;
   
-  // GPS时间数据
-  struct {
+  // GPS时间数据 - 命名结构体
+  struct GPSTimeData {
     uint16_t year = 0;
     uint8_t month = 0;
     uint8_t day = 0;
@@ -74,14 +74,9 @@ class GPSNTPServer : public Component, public gps::GPSListener {
   bool time_valid_ = false;
   uint32_t last_sync_time_ = 0;
   uint32_t pps_at_last_sync_ = 0;
-  struct {
-    uint16_t year = 0;
-    uint8_t month = 0;
-    uint8_t day = 0;
-    uint8_t hour = 0;
-    uint8_t minute = 0;
-    uint8_t second = 0;
-  } sync_gps_time_;
+  
+  // 同步时间数据 - 使用已命名的结构体
+  GPSTimeData sync_gps_time_;
   
   // NTP服务器
   WiFiUDP udp_;
