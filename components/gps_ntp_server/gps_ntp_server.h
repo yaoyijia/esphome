@@ -27,7 +27,7 @@ class GPSNTPServer : public Component, public gps::GPSListener {
   void on_update(TinyGPSPlus &tiny_gps) override;
   
   // 状态查询
-  bool is_gps_valid() const { return time_valid_; }
+  bool is_gps_valid() const { return gps_time_.valid; }
   bool is_pps_active() const { return pps_active_; }
   uint32_t get_pps_count() const { return pps_count_; }
   uint8_t get_time_quality() const;
@@ -68,10 +68,20 @@ class GPSNTPServer : public Component, public gps::GPSListener {
   bool pps_active_ = false;
   uint32_t pps_last_stable_ = 0;
   
-  // 时间状态
+  // 同步状态
+  bool wait_for_pps_ = false;
+  bool gps_updated_since_pps_ = false;
   bool time_valid_ = false;
-  uint32_t last_pps_sync_ = 0;
-  uint32_t last_pps_second_ = 0;
+  uint32_t last_sync_time_ = 0;
+  uint32_t pps_at_last_sync_ = 0;
+  struct {
+    uint16_t year = 0;
+    uint8_t month = 0;
+    uint8_t day = 0;
+    uint8_t hour = 0;
+    uint8_t minute = 0;
+    uint8_t second = 0;
+  } sync_gps_time_;
   
   // NTP服务器
   WiFiUDP udp_;
