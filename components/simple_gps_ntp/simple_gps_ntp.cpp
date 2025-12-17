@@ -1,4 +1,4 @@
-[file content begin]
+
 #include "simple_gps_ntp.h"
 #include "esphome/components/network/util.h"
 
