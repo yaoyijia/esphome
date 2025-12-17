@@ -11,18 +11,11 @@ GPSNTPServer *GPSNTPServer::instance_ = nullptr;
 // ==================== PPS中断处理 ====================
 void IRAM_ATTR GPSNTPServer::pps_interrupt_handler() {
   if (GPSNTPServer::instance_) {
-    uint32_t current_us = micros();
-    uint32_t last_edge = GPSNTPServer::instance_->pps_last_edge_us_;
-    
-    // 去抖动：只处理间隔大于500ms的中断（避免重复触发）
-    if ((current_us - last_edge) > 500000) {  // 0.5秒
-      GPSNTPServer::instance_->pps_last_edge_us_ = current_us;
-      GPSNTPServer::instance_->pps_count_++;
-      GPSNTPServer::instance_->pps_triggered_ = true;
-    }
+    GPSNTPServer::instance_->pps_last_edge_us_ = micros();
+    GPSNTPServer::instance_->pps_count_++;
+    GPSNTPServer::instance_->pps_triggered_ = true;
   }
 }
-
 
 // ==================== 初始化 ====================
 void GPSNTPServer::setup() {
@@ -47,7 +40,7 @@ void GPSNTPServer::setup() {
 
 // ==================== GPS更新回调 ====================
 void GPSNTPServer::on_update(TinyGPSPlus &tiny_gps) {
-  // 检查GPS数据是否有效（参考官方gps_time组件的逻辑）
+  // 检查GPS数据是否有效
   if (!tiny_gps.time.isValid() || !tiny_gps.date.isValid() || 
       !tiny_gps.time.isUpdated() || !tiny_gps.date.isUpdated() || 
       tiny_gps.date.year() < 2024) {
@@ -79,12 +72,10 @@ void GPSNTPServer::on_update(TinyGPSPlus &tiny_gps) {
       gps_valid_ = true;
       last_gps_update_ = millis();
       
-      // 只在不活跃PPS时记录GPS时间
-      if (!pps_active_) {
-        ESP_LOGI("gps_ntp", "GPS时间: %04d-%02d-%02d %02d:%02d:%02d UTC",
-                 tiny_gps.date.year(), tiny_gps.date.month(), tiny_gps.date.day(),
-                 tiny_gps.time.hour(), tiny_gps.time.minute(), tiny_gps.time.second());
-      }
+      // 记录GPS时间
+      ESP_LOGI("gps_ntp", "GPS时间: %04d-%02d-%02d %02d:%02d:%02d UTC",
+               tiny_gps.date.year(), tiny_gps.date.month(), tiny_gps.date.day(),
+               tiny_gps.time.hour(), tiny_gps.time.minute(), tiny_gps.time.second());
     } else {
       ESP_LOGE("gps_ntp", "设置系统时间失败");
     }
@@ -101,19 +92,19 @@ void GPSNTPServer::handle_pps() {
     uint32_t now_us = micros();
     uint32_t interval_us = (now_us - pps_last_edge_us_) & 0xFFFFFFFFUL;
     
-    // 更严格的间隔检查：0.8秒到1.2秒
-    if (interval_us > 800000 && interval_us < 1200000) {
+    // 检查PPS间隔是否稳定（900ms-1100ms）
+    if (interval_us > 900000 && interval_us < 1100000) {
       if (pps_count_ % 60 == 0) {  // 每分钟输出一次
-        ESP_LOGD("gps_ntp", "PPS #%u, 间隔: %.3f秒", 
-                 pps_count_, interval_us / 1000000.0f);
+        ESP_LOGD("gps_ntp", "PPS #%u, 间隔: %.3fms", 
+                 pps_count_, interval_us / 1000.0f);
       }
     } else {
-      ESP_LOGW("gps_ntp", "PPS间隔异常: %.3f秒", interval_us / 1000000.0f);
+      ESP_LOGW("gps_ntp", "PPS间隔异常: %.3fms", interval_us / 1000.0f);
     }
   }
   
-  // 检查PPS是否丢失（2.5秒无更新）
-  if (pps_active_ && (millis() - pps_last_stable_ > 2500)) {
+  // 检查PPS是否丢失（2秒无更新）
+  if (pps_active_ && (millis() - pps_last_stable_ > 2000)) {
     pps_active_ = false;
   }
 }
@@ -126,7 +117,7 @@ uint8_t GPSNTPServer::get_time_quality() const {
   return QUALITY_SYSTEM;
 }
 
-// ==================== NTP请求处理 ====================
+// ==================== NTP请求处理（修复版） ====================
 void GPSNTPServer::process_ntp() {
   int packetSize = udp_.parsePacket();
   if (packetSize >= 48) {
@@ -137,11 +128,17 @@ void GPSNTPServer::process_ntp() {
     
     ntp_requests_++;
     
+    // 保存客户端的Transmit Timestamp（字节40-47）
+    byte clientTransmit[8];
+    for (int i = 0; i < 8; i++) {
+      clientTransmit[i] = packetBuffer[40 + i];
+    }
+    
     // 获取当前系统时间
     struct timeval tv;
     gettimeofday(&tv, NULL);
     
-    // Unix时间转换为NTP时间（关键步骤！）
+    // Unix时间转换为NTP时间
     const unsigned long seventyYears = 2208988800UL;
     time_t ntp_timestamp = tv.tv_sec + seventyYears;
     
@@ -165,69 +162,66 @@ void GPSNTPServer::process_ntp() {
       }
     }
     
-    // 构建NTP响应包（基于工作代码）
+    // 构建NTP响应包
     memset(packetBuffer, 0, 48);
     
-    packetBuffer[0] = 0b00100100;  // LI=0, Version=4, Mode=4
-    packetBuffer[1] = stratum;
-    packetBuffer[2] = 6;           // polling minimum
-    packetBuffer[3] = 0xFA;        // precision
+    // NTP头部
+    packetBuffer[0] = 0x24;  // LI=0, Version=4, Mode=4
     
-    // root delay (0)
+    packetBuffer[1] = stratum;
+    packetBuffer[2] = 6;     // Poll interval: 64秒
+    packetBuffer[3] = 0xFA;  // Precision: 2^-6 ≈ 15.6ms
+    
+    // Root Delay (0)
     packetBuffer[4] = 0;
     packetBuffer[5] = 0;
     packetBuffer[6] = 8;
     packetBuffer[7] = 0;
     
-    // root dispersion (0.5秒)
+    // Root Dispersion (0.5秒)
     packetBuffer[8] = 0;
     packetBuffer[9] = 0;
     packetBuffer[10] = 0xC;
     packetBuffer[11] = 0;
     
-    // reference identifier (使用IP地址)
-    IPAddress myIP = network::get_ip_addresses()[0];
-    packetBuffer[12] = myIP[0];
-    packetBuffer[13] = myIP[1];
-    packetBuffer[14] = myIP[2];
-    packetBuffer[15] = myIP[3];
+    // Reference Identifier (GPS NTP)
+    packetBuffer[12] = 'G';
+    packetBuffer[13] = 'P';
+    packetBuffer[14] = 'S';
+    packetBuffer[15] = 'N';
     
-    // reference timestamp
+    // Reference Timestamp (服务器参考时间)
     uint32_t tempval = ntp_timestamp;
-    packetBuffer[16] = (tempval >> 24) & 0XFF;
+    packetBuffer[16] = (tempval >> 24) & 0xFF;
     packetBuffer[17] = (tempval >> 16) & 0xFF;
     packetBuffer[18] = (tempval >> 8) & 0xFF;
-    packetBuffer[19] = (tempval) & 0xFF;
+    packetBuffer[19] = tempval & 0xFF;
     packetBuffer[20] = 0;
     packetBuffer[21] = 0;
     packetBuffer[22] = 0;
     packetBuffer[23] = 0;
     
-    // copy originate timestamp from incoming packet
-    packetBuffer[24] = packetBuffer[40];
-    packetBuffer[25] = packetBuffer[41];
-    packetBuffer[26] = packetBuffer[42];
-    packetBuffer[27] = packetBuffer[43];
-    packetBuffer[28] = packetBuffer[44];
-    packetBuffer[29] = packetBuffer[45];
-    packetBuffer[30] = packetBuffer[46];
-    packetBuffer[31] = packetBuffer[47];
+    // ========== 关键修复：Origin Timestamp ==========
+    // 复制客户端的Transmit Timestamp
+    for (int i = 0; i < 8; i++) {
+      packetBuffer[24 + i] = clientTransmit[i];
+    }
     
-    // receive timestamp
-    packetBuffer[32] = (tempval >> 24) & 0XFF;
+    // Receive Timestamp (服务器接收时间)
+    packetBuffer[32] = (tempval >> 24) & 0xFF;
     packetBuffer[33] = (tempval >> 16) & 0xFF;
     packetBuffer[34] = (tempval >> 8) & 0xFF;
-    packetBuffer[35] = (tempval) & 0xFF;
+    packetBuffer[35] = tempval & 0xFF;
     packetBuffer[36] = 0;
     packetBuffer[37] = 0;
     packetBuffer[38] = 0;
     packetBuffer[39] = 0;
     
-    // transmit timestamp
-    packetBuffer[40] = (tempval >> 24) & 0XFF;
+    // Transmit Timestamp (服务器发送时间)
+    packetBuffer[40] = (tempval >> 24) & 0xFF;
     packetBuffer[41] = (tempval >> 16) & 0xFF;
     packetBuffer[42] = (tempval >> 8) & 0xFF;
-    packetBuffer[43] = (tempval) & 0xFF;
+    packetBuffer[43] = tempval & 0xFF;
     packetBuffer[44] = 0;
     packetBuffer[45] = 0;
     packetBuffer[46] = 0;
@@ -238,7 +232,7 @@ void GPSNTPServer::process_ntp() {
     udp_.write(packetBuffer, 48);
     udp_.endPacket();
     
-    // 记录日志（每10个请求记录一次）
+    // 记录日志
     if (ntp_requests_ % 10 == 0 || ntp_requests_ == 1) {
       time_t unix_time = ntp_timestamp - seventyYears;
       struct tm *tm_info = gmtime(&unix_time);
@@ -265,18 +259,18 @@ void GPSNTPServer::loop() {
   // 处理NTP请求
   process_ntp();
   
-  // 定期状态更新（每30秒）
+  // 定期状态更新
   static uint32_t last_status = 0;
   if (now - last_status > 30000) {
     last_status = now;
     
-    // 检查GPS超时（10秒无更新）
+    // 检查GPS超时
     if (gps_valid_ && (now - last_gps_update_ > 10000)) {
       gps_valid_ = false;
       ESP_LOGW("gps_ntp", "GPS信号丢失");
     }
     
-    // 输出状态信息
+    // 输出状态
     struct timeval tv;
     if (gettimeofday(&tv, nullptr) == 0) {
       struct tm *tm_info = gmtime(&tv.tv_sec);
@@ -314,3 +308,4 @@ void GPSNTPServer::dump_config() {
 
 }  // namespace gps_ntp_server
 }  // namespace esphome
+
