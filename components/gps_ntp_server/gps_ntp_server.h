@@ -1,9 +1,12 @@
 
+// gps_ntp_server.h
 #pragma once
 
 #include "esphome.h"
 #include "esphome/components/gps/gps.h"
 #include <WiFiUdp.h>
+#include <sys/time.h>
+#include <lwip/apps/sntp.h>  // 添加SNTP相关头文件
 
 namespace esphome {
 namespace gps_ntp_server {
@@ -44,12 +47,13 @@ class GPSNTPServer : public Component, public gps::GPSListener {
   void process_ntp();
   void handle_pps();
   static void IRAM_ATTR pps_interrupt_handler();
+  bool set_system_time_from_gps();  // 新增函数
   
-private:
+ private:
   gps::GPS *gps_ = nullptr;
   uint8_t pps_pin_ = 0;
   
-  // GPS时间数据 - 命名结构体
+  // GPS时间数据
   struct GPSTimeData {
     uint16_t year = 0;
     uint8_t month = 0;
@@ -74,8 +78,6 @@ private:
   bool time_valid_ = false;
   uint32_t last_sync_time_ = 0;
   uint32_t pps_at_last_sync_ = 0;
-  
-  // 同步时间数据 - 使用已命名的结构体
   GPSTimeData sync_gps_time_;
   
   // NTP服务器
@@ -92,4 +94,3 @@ private:
 
 }  // namespace gps_ntp_server
 }  // namespace esphome
-
