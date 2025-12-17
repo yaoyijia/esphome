@@ -26,9 +26,8 @@ async def to_code(config):
     await cg.register_component(var, config)
     
     cg.add(var.set_pps_pin(config[CONF_PPS_PIN]))
+    cg.add(var.set_debug_level(config[CONF_DEBUG_LEVEL]))
     
     if CONF_UART_ID in config:
         uart_component = await cg.get_variable(config[CONF_UART_ID])
         cg.add(var.set_uart(uart_component))
-    
-    cg.add(var.set_debug_level(config[CONF_DEBUG_LEVEL]))
