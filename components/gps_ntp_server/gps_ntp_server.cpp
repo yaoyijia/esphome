@@ -11,11 +11,18 @@ GPSNTPServer *GPSNTPServer::instance_ = nullptr;
 // ==================== PPS中断处理 ====================
 void IRAM_ATTR GPSNTPServer::pps_interrupt_handler() {
   if (GPSNTPServer::instance_) {
-    GPSNTPServer::instance_->pps_last_edge_us_ = micros();
-    GPSNTPServer::instance_->pps_count_++;
-    GPSNTPServer::instance_->pps_triggered_ = true;
+    uint32_t current_us = micros();
+    uint32_t last_edge = GPSNTPServer::instance_->pps_last_edge_us_;
+    
+    // 去抖动：只处理间隔大于500ms的中断（避免重复触发）
+    if ((current_us - last_edge) > 500000) {  // 0.5秒
+      GPSNTPServer::instance_->pps_last_edge_us_ = current_us;
+      GPSNTPServer::instance_->pps_count_++;
+      GPSNTPServer::instance_->pps_triggered_ = true;
+    }
   }
 }
+
 
 // ==================== 初始化 ====================
 void GPSNTPServer::setup() {
@@ -94,19 +101,19 @@ void GPSNTPServer::handle_pps() {
     uint32_t now_us = micros();
     uint32_t interval_us = (now_us - pps_last_edge_us_) & 0xFFFFFFFFUL;
     
-    // 检查PPS间隔是否稳定（900ms-1100ms）
-    if (interval_us > 900000 && interval_us < 1100000) {
+    // 更严格的间隔检查：0.8秒到1.2秒
+    if (interval_us > 800000 && interval_us < 1200000) {
       if (pps_count_ % 60 == 0) {  // 每分钟输出一次
-        ESP_LOGD("gps_ntp", "PPS #%u, 间隔: %.3fms", 
-                 pps_count_, interval_us / 1000.0f);
+        ESP_LOGD("gps_ntp", "PPS #%u, 间隔: %.3f秒", 
+                 pps_count_, interval_us / 1000000.0f);
       }
     } else {
-      ESP_LOGW("gps_ntp", "PPS间隔异常: %.3fms", interval_us / 1000.0f);
+      ESP_LOGW("gps_ntp", "PPS间隔异常: %.3f秒", interval_us / 1000000.0f);
     }
   }
   
-  // 检查PPS是否丢失（2秒无更新）
-  if (pps_active_ && (millis() - pps_last_stable_ > 2000)) {
+  // 检查PPS是否丢失（2.5秒无更新）
+  if (pps_active_ && (millis() - pps_last_stable_ > 2500)) {
     pps_active_ = false;
   }
 }
