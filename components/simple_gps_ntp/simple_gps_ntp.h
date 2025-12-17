@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include "esphome.h"
@@ -17,6 +16,14 @@ class SimpleGPSNTPServer : public Component {
   void loop() override;
   void dump_config() override;
 
+  // 公共方法，供YAML配置使用
+  bool is_gps_valid() { return gps_valid_; }
+  bool is_pps_active() { return pps_active_; }
+  uint32_t get_pps_count() { return pps_count_; }
+  uint8_t get_gps_hour() { return gps_hour_; }
+  uint8_t get_gps_minute() { return gps_minute_; }
+  uint8_t get_gps_second() { return gps_second_; }
+  
  protected:
   void parse_gps();
   void handle_pps();
@@ -41,6 +48,9 @@ class SimpleGPSNTPServer : public Component {
   uint16_t gps_year_ = 0;
   bool gps_valid_ = false;
   
+  // 添加缺失的变量
+  float time_calibration_ = 0.0f;
+  
   volatile uint32_t last_pps_us_ = 0;
   volatile uint32_t pps_count_ = 0;
   volatile bool pps_active_ = false;
@@ -49,6 +59,7 @@ class SimpleGPSNTPServer : public Component {
   bool ntp_started_ = false;
   
   uint32_t last_loop_ = 0;
+  uint32_t last_ntp_log_ = 0;
   
   static SimpleGPSNTPServer *instance_;
 };
