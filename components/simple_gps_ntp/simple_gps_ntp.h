@@ -2,7 +2,6 @@
 
 #include "esphome.h"
 #include <WiFiUdp.h>
-#include <time.h>  // 添加time.h头文件
 
 namespace esphome {
 namespace simple_gps_ntp {
@@ -18,8 +17,6 @@ class SimpleGPSNTPServer : public Component {
 
  protected:
   void parse_gps();
-  void parse_rmc_sentence(char* sentence);  // 新增：解析RMC语句
-  void calculate_unix_timestamp();          // 新增：计算Unix时间戳
   void handle_pps();
   void handle_ntp();
   bool get_ntp_time(uint32_t &seconds, uint32_t &fraction);
@@ -31,23 +28,20 @@ class SimpleGPSNTPServer : public Component {
   uint8_t pps_pin_ = 0;
   
   // GPS数据
-  char gps_buffer_[256];  // 增大缓冲区
+  char gps_buffer_[256];
   uint8_t gps_idx_ = 0;
   
-  // 日期和时间数据
-  uint16_t gps_year_ = 0;      // 新增：年份
-  uint8_t gps_month_ = 0;      // 新增：月份
-  uint8_t gps_day_ = 0;        // 新增：日
-  uint8_t gps_hour_ = 0;       // 新增：时
-  uint8_t gps_minute_ = 0;     // 新增：分
-  uint8_t gps_second_ = 0;     // 新增：秒
-  
-  uint32_t gps_seconds_ = 0;   // 当天从0:00:00开始的秒数
-  uint32_t gps_timestamp_ = 0; // Unix时间戳（从1970-01-01开始的秒数）
-  uint32_t last_pps_us_ = 0;
-  uint32_t pps_count_ = 0;
+  // GPS时间数据
+  uint8_t gps_hour_ = 0;
+  uint8_t gps_minute_ = 0;
+  uint8_t gps_second_ = 0;
   bool gps_valid_ = false;
-  bool pps_active_ = false;
+  float time_calibration_ = 0.0f;  // GPS时间与系统时间的校准值（秒）
+  
+  // PPS数据
+  volatile uint32_t last_pps_us_ = 0;
+  volatile uint32_t pps_count_ = 0;
+  volatile bool pps_active_ = false;
   
   // NTP
   WiFiUDP udp_;
