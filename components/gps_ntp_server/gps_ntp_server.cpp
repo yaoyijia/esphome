@@ -42,15 +42,35 @@ void GPSNTPServer::setup() {
 // ==================== 发送NTP响应 ====================
 void send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort, 
                       byte *clientTransmit, uint32_t pps_last_edge_us, 
-                      bool pps_active) {
-  // 获取当前系统时间
-  struct timeval tv;
-  gettimeofday(&tv, NULL);
+                      bool pps_active, uint32_t &ntp_requests) {
+  // 记录接收时间（尽可能早）
+  struct timeval receive_tv;
+  gettimeofday(&receive_tv, NULL);
   
   // 转换Unix时间为NTP时间
   const unsigned long seventyYears = 2208988800UL;
-  uint64_t ntp_seconds = (uint64_t)tv.tv_sec + seventyYears;
-  uint64_t ntp_fraction = 0;
+  
+  // Reference Timestamp（使用系统启动时间或固定时间）
+  static time_t ref_time = 0;
+  if (ref_time == 0) {
+    ref_time = receive_tv.tv_sec - 3600; // 1小时前，表示稳定运行
+  }
+  uint64_t ref_ntp_seconds = (uint64_t)ref_time + seventyYears;
+  uint64_t ref_ntp_fraction = 0;
+  
+  // Receive Timestamp
+  uint64_t recv_ntp_seconds = (uint64_t)receive_tv.tv_sec + seventyYears;
+  uint64_t recv_ntp_fraction = (uint64_t)receive_tv.tv_usec * 4294967296ULL / 1000000ULL;
+  
+  // 等待一点点时间，让Transmit Timestamp不同
+  // 实际上NTP服务器处理请求需要时间
+  delayMicroseconds(100);
+  
+  // Transmit Timestamp（当前时间）
+  struct timeval transmit_tv;
+  gettimeofday(&transmit_tv, NULL);
+  uint64_t tx_ntp_seconds = (uint64_t)transmit_tv.tv_sec + seventyYears;
+  uint64_t tx_ntp_fraction = 0;
   
   // 如果有PPS，使用PPS校准微秒部分
   if (pps_active) {
@@ -70,14 +90,18 @@ void send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort,
     
     // 如果超过1秒，调整秒数
     if (since_pps >= 1000000UL) {
-      ntp_seconds += since_pps / 1000000UL;
+      tx_ntp_seconds += since_pps / 1000000UL;
     }
     
     // 使用PPS校准的微秒部分
-    ntp_fraction = (uint64_t)microseconds * 4294967296ULL / 1000000ULL;
+    tx_ntp_fraction = (uint64_t)microseconds * 4294967296ULL / 1000000ULL;
+    
+    // 同时校准Receive Timestamp的微秒部分
+    uint32_t recv_microseconds = (receive_tv.tv_usec + since_pps) % 1000000UL;
+    recv_ntp_fraction = (uint64_t)recv_microseconds * 4294967296ULL / 1000000ULL;
   } else {
     // 无PPS，使用系统时间的微秒
-    ntp_fraction = (uint64_t)tv.tv_usec * 4294967296ULL / 1000000ULL;
+    tx_ntp_fraction = (uint64_t)transmit_tv.tv_usec * 4294967296ULL / 1000000ULL;
   }
   
   // 构建NTP响应包
@@ -86,82 +110,92 @@ void send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort,
   
   // NTP头部
   packetBuffer[0] = 0x24;  // LI=0, Version=4, Mode=4
-  packetBuffer[1] = pps_active ? 2 : 4;  // stratum: PPS=2, 系统时间=4
-  packetBuffer[2] = 6;     // Poll interval: 64秒
-  packetBuffer[3] = 0xEC;  // Precision: 2^-20 ≈ 1微秒
+  packetBuffer[1] = pps_active ? 2 : 3;  // stratum: PPS=2(secondary), 无PPS=3(tertiary)
+  packetBuffer[2] = 4;     // Poll interval: 16秒（更合理）
+  packetBuffer[3] = 0xFA;  // Precision: 2^-6 ≈ 15.6ms（更实际）
   
-  // Root Delay (0)
-  memset(&packetBuffer[4], 0, 4);
+  // Root Delay (0.001秒)
+  uint32_t root_delay = 1 << 16;  // 1 * 2^-16 = 0.001秒
+  packetBuffer[4] = (root_delay >> 24) & 0xFF;
+  packetBuffer[5] = (root_delay >> 16) & 0xFF;
+  packetBuffer[6] = (root_delay >> 8) & 0xFF;
+  packetBuffer[7] = root_delay & 0xFF;
   
-  // Root Dispersion
-  uint32_t root_dispersion = pps_active ? (100 << 16) : (1000 << 16);  // 微秒
+  // Root Dispersion (0.01秒)
+  uint32_t root_dispersion = 10 << 16;  // 10 * 2^-16 = 0.00015秒 ≈ 0.15ms
   packetBuffer[8] = (root_dispersion >> 24) & 0xFF;
   packetBuffer[9] = (root_dispersion >> 16) & 0xFF;
   packetBuffer[10] = (root_dispersion >> 8) & 0xFF;
   packetBuffer[11] = root_dispersion & 0xFF;
   
-  // Reference Identifier
+  // Reference Identifier (GPSP)
   packetBuffer[12] = 'G';
   packetBuffer[13] = 'P';
   packetBuffer[14] = 'S';
-  packetBuffer[15] = pps_active ? 'P' : 'S';  // PPS或系统时间
+  packetBuffer[15] = 'P';  // GPS with PPS
   
   // Reference Timestamp
-  uint32_t ref_seconds = (uint32_t)ntp_seconds;
-  uint32_t ref_fraction = (uint32_t)ntp_fraction;
+  uint32_t ref_seconds = (uint32_t)ref_ntp_seconds;
+  uint32_t ref_fraction = (uint32_t)ref_ntp_fraction;
   
-  for (int i = 0; i < 4; i++) {
-    packetBuffer[16 + i] = (ref_seconds >> (24 - i*8)) & 0xFF;
-    packetBuffer[20 + i] = (ref_fraction >> (24 - i*8)) & 0xFF;
-  }
+  packetBuffer[16] = (ref_seconds >> 24) & 0xFF;
+  packetBuffer[17] = (ref_seconds >> 16) & 0xFF;
+  packetBuffer[18] = (ref_seconds >> 8) & 0xFF;
+  packetBuffer[19] = ref_seconds & 0xFF;
+  
+  packetBuffer[20] = (ref_fraction >> 24) & 0xFF;
+  packetBuffer[21] = (ref_fraction >> 16) & 0xFF;
+  packetBuffer[22] = (ref_fraction >> 8) & 0xFF;
+  packetBuffer[23] = ref_fraction & 0xFF;
   
   // Origin Timestamp（复制客户端时间）
   memcpy(&packetBuffer[24], clientTransmit, 8);
   
   // Receive Timestamp
-  memcpy(&packetBuffer[32], &packetBuffer[16], 8);
+  uint32_t recv_seconds = (uint32_t)recv_ntp_seconds;
+  uint32_t recv_fraction = (uint32_t)recv_ntp_fraction;
+  
+  packetBuffer[32] = (recv_seconds >> 24) & 0xFF;
+  packetBuffer[33] = (recv_seconds >> 16) & 0xFF;
+  packetBuffer[34] = (recv_seconds >> 8) & 0xFF;
+  packetBuffer[35] = recv_seconds & 0xFF;
+  
+  packetBuffer[36] = (recv_fraction >> 24) & 0xFF;
+  packetBuffer[37] = (recv_fraction >> 16) & 0xFF;
+  packetBuffer[38] = (recv_fraction >> 8) & 0xFF;
+  packetBuffer[39] = recv_fraction & 0xFF;
   
   // Transmit Timestamp
-  memcpy(&packetBuffer[40], &packetBuffer[16], 8);
+  uint32_t tx_seconds = (uint32_t)tx_ntp_seconds;
+  uint32_t tx_fraction = (uint32_t)tx_ntp_fraction;
+  
+  packetBuffer[40] = (tx_seconds >> 24) & 0xFF;
+  packetBuffer[41] = (tx_seconds >> 16) & 0xFF;
+  packetBuffer[42] = (tx_seconds >> 8) & 0xFF;
+  packetBuffer[43] = tx_seconds & 0xFF;
+  
+  packetBuffer[44] = (tx_fraction >> 24) & 0xFF;
+  packetBuffer[45] = (tx_fraction >> 16) & 0xFF;
+  packetBuffer[46] = (tx_fraction >> 8) & 0xFF;
+  packetBuffer[47] = tx_fraction & 0xFF;
   
   // 发送响应
   udp.beginPacket(remote, remotePort);
   udp.write(packetBuffer, 48);
   udp.endPacket();
-}
-
-// ==================== 处理NTP请求 ====================
-void handle_ntp_request(WiFiUDP &udp, uint32_t &ntp_requests, 
-                       uint32_t pps_last_edge_us, bool pps_active) {
-  int packetSize = udp.parsePacket();
-  if (packetSize >= 48) {
-    byte packetBuffer[48];
-    udp.read(packetBuffer, 48);
-    IPAddress remote = udp.remoteIP();
-    int remotePort = udp.remotePort();
+  
+  ntp_requests++;
+  
+  // 记录日志（每10个请求）
+  if (ntp_requests % 10 == 0 || ntp_requests == 1) {
+    time_t unix_time = tx_seconds - seventyYears;
+    struct tm *tm_info = gmtime(&unix_time);
     
-    ntp_requests++;
-    
-    // 保存客户端的Transmit Timestamp
-    byte clientTransmit[8];
-    memcpy(clientTransmit, &packetBuffer[40], 8);
-    
-    // 立即发送响应
-    send_ntp_response(udp, remote, remotePort, clientTransmit, 
-                     pps_last_edge_us, pps_active);
-    
-    // 每20个请求记录一次日志
-    if (ntp_requests % 20 == 0 || ntp_requests == 1) {
-      // 获取当前时间用于日志
-      struct timeval tv;
-      gettimeofday(&tv, NULL);
-      time_t unix_time = tv.tv_sec;
-      struct tm *tm_info = gmtime(&unix_time);
-      
-      ESP_LOGI("gps_ntp", "NTP响应 #%u: %s:%d, UTC=%02d:%02d:%02d",
-               ntp_requests, remote.toString().c_str(), remotePort,
-               tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
-    }
+    ESP_LOGI("gps_ntp", "NTP响应 #%u: %s:%d, UTC=%02d:%02d:%02d.%06u, 质量=%s",
+             ntp_requests, remote.toString().c_str(), remotePort,
+             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
+             (uint32_t)((uint64_t)tx_fraction * 1000000ULL / 4294967296ULL),
+             pps_active ? "PPS" : "系统时间");
   }
 }
 
