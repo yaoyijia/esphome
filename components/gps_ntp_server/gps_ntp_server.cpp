@@ -16,33 +16,9 @@ void IRAM_ATTR GPSNTPServer::pps_interrupt_handler() {
   }
 }
 
-// ==================== 初始化 ====================
-void GPSNTPServer::setup() {
-  ESP_LOGI("gps_ntp", "初始化GPS NTP服务器 (极简版)");
-  
-  instance_ = this;
-  
-  // 设置PPS引脚中断
-  if (pps_pin_ > 0) {
-    pinMode(pps_pin_, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(pps_pin_), 
-                   pps_interrupt_handler, 
-                   RISING);  // 使用上升沿触发
-    
-    ESP_LOGI("gps_ntp", "PPS引脚: GPIO%d", pps_pin_);
-  } else {
-    ESP_LOGI("gps_ntp", "未配置PPS引脚，将使用系统时间");
-  }
-  
-  // 启动NTP服务器
-  udp_.begin(123);
-  ESP_LOGI("gps_ntp", "NTP服务器已启动，端口123");
-}
-
 // ==================== 发送NTP响应 ====================
-void send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort, 
-                      byte *clientTransmit, uint32_t pps_last_edge_us, 
-                      bool pps_active, uint32_t &ntp_requests) {
+void GPSNTPServer::send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort, 
+                                    byte *clientTransmit) {
   // 记录接收时间（尽可能早）
   struct timeval receive_tv;
   gettimeofday(&receive_tv, NULL);
@@ -63,7 +39,6 @@ void send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort,
   uint64_t recv_ntp_fraction = (uint64_t)receive_tv.tv_usec * 4294967296ULL / 1000000ULL;
   
   // 等待一点点时间，让Transmit Timestamp不同
-  // 实际上NTP服务器处理请求需要时间
   delayMicroseconds(100);
   
   // Transmit Timestamp（当前时间）
@@ -73,9 +48,9 @@ void send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort,
   uint64_t tx_ntp_fraction = 0;
   
   // 如果有PPS，使用PPS校准微秒部分
-  if (pps_active) {
+  if (pps_active_) {
     uint32_t now_us = micros();
-    uint32_t pps_edge_us = pps_last_edge_us;
+    uint32_t pps_edge_us = pps_last_edge_us_;
     
     // 计算自上次PPS以来的微秒数（处理溢出）
     uint32_t since_pps;
@@ -110,9 +85,9 @@ void send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort,
   
   // NTP头部
   packetBuffer[0] = 0x24;  // LI=0, Version=4, Mode=4
-  packetBuffer[1] = pps_active ? 2 : 3;  // stratum: PPS=2(secondary), 无PPS=3(tertiary)
-  packetBuffer[2] = 4;     // Poll interval: 16秒（更合理）
-  packetBuffer[3] = 0xFA;  // Precision: 2^-6 ≈ 15.6ms（更实际）
+  packetBuffer[1] = pps_active_ ? 2 : 3;  // stratum: PPS=2(secondary), 无PPS=3(tertiary)
+  packetBuffer[2] = 4;     // Poll interval: 16秒
+  packetBuffer[3] = 0xFA;  // Precision: 2^-6 ≈ 15.6ms
   
   // Root Delay (0.001秒)
   uint32_t root_delay = 1 << 16;  // 1 * 2^-16 = 0.001秒
@@ -122,7 +97,7 @@ void send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort,
   packetBuffer[7] = root_delay & 0xFF;
   
   // Root Dispersion (0.01秒)
-  uint32_t root_dispersion = 10 << 16;  // 10 * 2^-16 = 0.00015秒 ≈ 0.15ms
+  uint32_t root_dispersion = 10 << 16;  // 10 * 2^-16 = 0.00015秒
   packetBuffer[8] = (root_dispersion >> 24) & 0xFF;
   packetBuffer[9] = (root_dispersion >> 16) & 0xFF;
   packetBuffer[10] = (root_dispersion >> 8) & 0xFF;
@@ -184,34 +159,74 @@ void send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort,
   udp.write(packetBuffer, 48);
   udp.endPacket();
   
-  ntp_requests++;
+  ntp_requests_++;
   
   // 记录日志（每10个请求）
-  if (ntp_requests % 10 == 0 || ntp_requests == 1) {
+  if (ntp_requests_ % 10 == 0 || ntp_requests_ == 1) {
     time_t unix_time = tx_seconds - seventyYears;
     struct tm *tm_info = gmtime(&unix_time);
     
     ESP_LOGI("gps_ntp", "NTP响应 #%u: %s:%d, UTC=%02d:%02d:%02d.%06u, 质量=%s",
-             ntp_requests, remote.toString().c_str(), remotePort,
+             ntp_requests_, remote.toString().c_str(), remotePort,
              tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
              (uint32_t)((uint64_t)tx_fraction * 1000000ULL / 4294967296ULL),
-             pps_active ? "PPS" : "系统时间");
+             pps_active_ ? "PPS" : "系统时间");
+  }
+}
+
+// ==================== 处理NTP请求 ====================
+void GPSNTPServer::handle_ntp_request() {
+  int packetSize = udp_.parsePacket();
+  if (packetSize >= 48) {
+    byte packetBuffer[48];
+    udp_.read(packetBuffer, 48);
+    IPAddress remote = udp_.remoteIP();
+    int remotePort = udp_.remotePort();
+    
+    // 保存客户端的Transmit Timestamp
+    byte clientTransmit[8];
+    memcpy(clientTransmit, &packetBuffer[40], 8);
+    
+    // 发送响应
+    send_ntp_response(udp_, remote, remotePort, clientTransmit);
   }
 }
 
 // ==================== 处理PPS ====================
-void handle_pps(bool &pps_active, volatile bool &pps_triggered, 
-               uint32_t &pps_last_stable) {
-  if (pps_triggered) {
-    pps_triggered = false;
-    pps_active = true;
-    pps_last_stable = millis();
+void GPSNTPServer::handle_pps() {
+  if (pps_triggered_) {
+    pps_triggered_ = false;
+    pps_active_ = true;
+    pps_last_stable_ = millis();
   }
   
   // 检查PPS是否丢失（3秒无更新）
-  if (pps_active && (millis() - pps_last_stable > 3000)) {
-    pps_active = false;
+  if (pps_active_ && (millis() - pps_last_stable_ > 3000)) {
+    pps_active_ = false;
   }
+}
+
+// ==================== 初始化 ====================
+void GPSNTPServer::setup() {
+  ESP_LOGI("gps_ntp", "初始化GPS NTP服务器 (极简版)");
+  
+  instance_ = this;
+  
+  // 设置PPS引脚中断
+  if (pps_pin_ > 0) {
+    pinMode(pps_pin_, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(pps_pin_), 
+                   pps_interrupt_handler, 
+                   RISING);  // 使用上升沿触发
+    
+    ESP_LOGI("gps_ntp", "PPS引脚: GPIO%d", pps_pin_);
+  } else {
+    ESP_LOGI("gps_ntp", "未配置PPS引脚，将使用系统时间");
+  }
+  
+  // 启动NTP服务器
+  udp_.begin(123);
+  ESP_LOGI("gps_ntp", "NTP服务器已启动，端口123");
 }
 
 // ==================== 主循环 ====================
@@ -223,10 +238,10 @@ void GPSNTPServer::loop() {
   last_loop_ = now;
   
   // 处理PPS
-  handle_pps(pps_active_, pps_triggered_, pps_last_stable_);
+  handle_pps();
   
   // 处理NTP请求
-  handle_ntp_request(udp_, ntp_requests_, pps_last_edge_us_, pps_active_);
+  handle_ntp_request();
   
   // 定期状态更新
   static uint32_t last_status = 0;
