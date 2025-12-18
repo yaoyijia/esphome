@@ -117,7 +117,7 @@ uint8_t GPSNTPServer::get_time_quality() const {
   return QUALITY_SYSTEM;
 }
 
-// ==================== NTP请求处理（修复版） ====================
+// ==================== NTP请求处理（完整微秒精度） ====================
 void GPSNTPServer::process_ntp() {
   int packetSize = udp_.parsePacket();
   if (packetSize >= 48) {
@@ -134,13 +134,31 @@ void GPSNTPServer::process_ntp() {
       clientTransmit[i] = packetBuffer[40 + i];
     }
     
-    // 获取当前系统时间
+    // 获取当前系统时间（包括微秒）
     struct timeval tv;
     gettimeofday(&tv, NULL);
     
     // Unix时间转换为NTP时间
     const unsigned long seventyYears = 2208988800UL;
-    time_t ntp_timestamp = tv.tv_sec + seventyYears;
+    uint64_t ntp_seconds = (uint64_t)tv.tv_sec + seventyYears;
+    
+    // 计算NTP分数部分（微秒转换为2^32分数）
+    uint64_t ntp_fraction = (uint64_t)tv.tv_usec * 4294967296ULL / 1000000ULL;
+    
+    // PPS微秒级校准
+    if (pps_active_ && pps_count_ > 0) {
+      uint32_t now_us = micros();
+      uint32_t since_pps = (now_us - pps_last_edge_us_) & 0xFFFFFFFFUL;
+      
+      if (since_pps < 1100000) {  // 合理范围内
+        uint32_t pps_micros = since_pps % 1000000UL;
+        ntp_fraction = (uint64_t)pps_micros * 4294967296ULL / 1000000ULL;
+        
+        if (since_pps >= 1000000) {
+          ntp_seconds += since_pps / 1000000UL;
+        }
+      }
+    }
     
     // 根据时间质量设置stratum
     uint8_t quality = get_time_quality();
@@ -190,42 +208,46 @@ void GPSNTPServer::process_ntp() {
     packetBuffer[14] = 'S';
     packetBuffer[15] = 'N';
     
-    // Reference Timestamp (服务器参考时间)
-    uint32_t tempval = ntp_timestamp;
-    packetBuffer[16] = (tempval >> 24) & 0xFF;
-    packetBuffer[17] = (tempval >> 16) & 0xFF;
-    packetBuffer[18] = (tempval >> 8) & 0xFF;
-    packetBuffer[19] = tempval & 0xFF;
-    packetBuffer[20] = 0;
-    packetBuffer[21] = 0;
-    packetBuffer[22] = 0;
-    packetBuffer[23] = 0;
+    // Reference Timestamp（包括微秒）
+    uint32_t ref_seconds = (uint32_t)ntp_seconds;
+    uint32_t ref_fraction = (uint32_t)ntp_fraction;
     
-    // ========== 关键修复：Origin Timestamp ==========
-    // 复制客户端的Transmit Timestamp
+    packetBuffer[16] = (ref_seconds >> 24) & 0xFF;
+    packetBuffer[17] = (ref_seconds >> 16) & 0xFF;
+    packetBuffer[18] = (ref_seconds >> 8) & 0xFF;
+    packetBuffer[19] = ref_seconds & 0xFF;
+    
+    packetBuffer[20] = (ref_fraction >> 24) & 0xFF;
+    packetBuffer[21] = (ref_fraction >> 16) & 0xFF;
+    packetBuffer[22] = (ref_fraction >> 8) & 0xFF;
+    packetBuffer[23] = ref_fraction & 0xFF;
+    
+    // Origin Timestamp（复制客户端时间）
     for (int i = 0; i < 8; i++) {
       packetBuffer[24 + i] = clientTransmit[i];
     }
     
-    // Receive Timestamp (服务器接收时间)
-    packetBuffer[32] = (tempval >> 24) & 0xFF;
-    packetBuffer[33] = (tempval >> 16) & 0xFF;
-    packetBuffer[34] = (tempval >> 8) & 0xFF;
-    packetBuffer[35] = tempval & 0xFF;
-    packetBuffer[36] = 0;
-    packetBuffer[37] = 0;
-    packetBuffer[38] = 0;
-    packetBuffer[39] = 0;
+    // Receive Timestamp（包括微秒）
+    packetBuffer[32] = (ref_seconds >> 24) & 0xFF;
+    packetBuffer[33] = (ref_seconds >> 16) & 0xFF;
+    packetBuffer[34] = (ref_seconds >> 8) & 0xFF;
+    packetBuffer[35] = ref_seconds & 0xFF;
     
-    // Transmit Timestamp (服务器发送时间)
-    packetBuffer[40] = (tempval >> 24) & 0xFF;
-    packetBuffer[41] = (tempval >> 16) & 0xFF;
-    packetBuffer[42] = (tempval >> 8) & 0xFF;
-    packetBuffer[43] = tempval & 0xFF;
-    packetBuffer[44] = 0;
-    packetBuffer[45] = 0;
-    packetBuffer[46] = 0;
-    packetBuffer[47] = 0;
+    packetBuffer[36] = (ref_fraction >> 24) & 0xFF;
+    packetBuffer[37] = (ref_fraction >> 16) & 0xFF;
+    packetBuffer[38] = (ref_fraction >> 8) & 0xFF;
+    packetBuffer[39] = ref_fraction & 0xFF;
+    
+    // Transmit Timestamp（包括微秒）
+    packetBuffer[40] = (ref_seconds >> 24) & 0xFF;
+    packetBuffer[41] = (ref_seconds >> 16) & 0xFF;
+    packetBuffer[42] = (ref_seconds >> 8) & 0xFF;
+    packetBuffer[43] = ref_seconds & 0xFF;
+    
+    packetBuffer[44] = (ref_fraction >> 24) & 0xFF;
+    packetBuffer[45] = (ref_fraction >> 16) & 0xFF;
+    packetBuffer[46] = (ref_fraction >> 8) & 0xFF;
+    packetBuffer[47] = ref_fraction & 0xFF;
     
     // 发送响应
     udp_.beginPacket(remote, remotePort);
@@ -234,12 +256,13 @@ void GPSNTPServer::process_ntp() {
     
     // 记录日志
     if (ntp_requests_ % 10 == 0 || ntp_requests_ == 1) {
-      time_t unix_time = ntp_timestamp - seventyYears;
+      time_t unix_time = ref_seconds - seventyYears;
       struct tm *tm_info = gmtime(&unix_time);
       
-      ESP_LOGI("gps_ntp", "NTP响应 #%u: %s:%d, UTC=%02d:%02d:%02d, 质量=%d",
+      ESP_LOGI("gps_ntp", "NTP响应 #%u: %s:%d, UTC=%02d:%02d:%02d.%06u, 质量=%d",
                ntp_requests_, remote.toString().c_str(), remotePort,
                tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
+               (uint32_t)((uint64_t)ref_fraction * 1000000ULL / 4294967296ULL),
                quality);
     }
   }
@@ -275,12 +298,13 @@ void GPSNTPServer::loop() {
     if (gettimeofday(&tv, nullptr) == 0) {
       struct tm *tm_info = gmtime(&tv.tv_sec);
       
-      ESP_LOGI("gps_ntp", "状态: GPS=%s, PPS=%s, PPS计数=%u, 质量=%d, UTC=%02d:%02d:%02d, NTP请求=%u",
+      ESP_LOGI("gps_ntp", "状态: GPS=%s, PPS=%s, PPS计数=%u, 质量=%d, UTC=%02d:%02d:%02d.%06u, NTP请求=%u",
                gps_valid_ ? "有效" : "无效",
                pps_active_ ? "活跃" : "无效",
                pps_count_,
                get_time_quality(),
                tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
+               tv.tv_usec,
                ntp_requests_);
     }
   }
@@ -300,9 +324,10 @@ void GPSNTPServer::dump_config() {
   if (gettimeofday(&tv, nullptr) == 0) {
     struct tm *tm_info = gmtime(&tv.tv_sec);
     
-    ESP_LOGCONFIG("gps_ntp", "  系统时间: %04d-%02d-%02d %02d:%02d:%02d UTC",
+    ESP_LOGCONFIG("gps_ntp", "  系统时间: %04d-%02d-%02d %02d:%02d:%02d.%06u UTC",
                  tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
-                 tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+                 tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
+                 tv.tv_usec);
   }
 }
 
