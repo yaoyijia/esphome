@@ -23,7 +23,6 @@ async def to_code(config):
     
     cg.add(var.set_pps_pin(config[CONF_PPS_PIN]))
     
-    # GPS组件是可选的，用于兼容性
     if CONF_GPS_ID in config:
         gps_component = await cg.get_variable(config[CONF_GPS_ID])
         cg.add(var.set_gps(gps_component))
