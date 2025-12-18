@@ -34,10 +34,10 @@ void GPSNTPServer::setup() {
   
   // 设置PPS引脚中断
   if (pps_pin_ > 0) {
-    pinMode(pps_pin_, INPUT_FALLING);
+    pinMode(pps_pin_, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(pps_pin_), 
                    pps_interrupt_handler, 
-                   FALLING);
+                   RISING);
     ESP_LOGI("gps_ntp", "PPS引脚配置在GPIO %d", pps_pin_);
   } else {
     ESP_LOGW("gps_ntp", "未配置PPS引脚，时间精度将受限");
