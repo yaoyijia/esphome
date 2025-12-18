@@ -9,6 +9,7 @@ namespace gps_ntp_server {
 class GPSNTPServer : public Component {
  public:
   void set_pps_pin(uint8_t pin) { pps_pin_ = pin; }
+  void set_gps(gps::GPS *gps) { gps_ = gps; }  // 保持与Python代码的兼容性
   
   void setup() override;
   void loop() override;
@@ -18,7 +19,7 @@ class GPSNTPServer : public Component {
   bool is_pps_active() const { return pps_active_; }
   uint32_t get_pps_count() const { return pps_count_; }
   uint32_t get_ntp_requests() const { return ntp_requests_; }
-  float get_time_error() const { return time_error_ms_; }
+  float get_time_error() const { return time_discipline_.error_ms; }  // 修复这里
   
  protected:
   static void IRAM_ATTR pps_interrupt_handler();
@@ -41,6 +42,9 @@ class GPSNTPServer : public Component {
   // NTP服务器
   WiFiUDP udp_;
   uint32_t ntp_requests_ = 0;
+  
+  // GPS（可选，为了兼容性保留）
+  gps::GPS *gps_ = nullptr;
   
   // 时间驯服相关
   struct {
