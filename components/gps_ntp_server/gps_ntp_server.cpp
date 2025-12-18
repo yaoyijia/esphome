@@ -34,7 +34,7 @@ void GPSNTPServer::setup() {
   
   // 设置PPS引脚中断
   if (pps_pin_ > 0) {
-    pinMode(pps_pin_, INPUT_PULLUP);
+    pinMode(pps_pin_, INPUT_FALLING);
     attachInterrupt(digitalPinToInterrupt(pps_pin_), 
                    pps_interrupt_handler, 
                    FALLING);
