@@ -26,17 +26,6 @@ void GPSNTPServer::set_gps(gps::GPS *gps) {
   }
 }
 
-// ==================== 获取高精度时间（跨平台） ====================
-uint64_t GPSNTPServer::get_precise_time_us() {
-#ifdef USE_ESP32
-  // ESP32可以使用高精度定时器
-  return esp_timer_get_time();  // 注意：需要包含正确的头文件
-#else
-  // ESP8266使用micros()，但需要处理溢出
-  return micros();  // 返回32位值，会溢出，但用于计算间隔是可以的
-#endif
-}
-
 // ==================== 初始化 ====================
 void GPSNTPServer::setup() {
   ESP_LOGI("gps_ntp", "初始化GPS NTP服务器");
