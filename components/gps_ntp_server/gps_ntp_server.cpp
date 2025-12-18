@@ -129,29 +129,14 @@ void GPSNTPServer::send_ntp_response(WiFiUDP &udp, IPAddress remote, int remoteP
 
 // ==================== 时间驯服函数 ====================
 void GPSNTPServer::discipline_time() {
-  if (!pps_active_) return;
+  // 获取当前系统时间
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
   
-  uint32_t now = millis();
+  // 计算误差（微秒部分，转换为毫秒）
+  float error_ms = tv.tv_usec / 1000.0f;
   
-  // 每秒驯服一次
-  if (now - time_discipline_.last_discipline < 1000) return;
-  
-  // 计算自上次PPS以来的微秒数
-  uint32_t current_us = micros();
-  uint32_t pps_edge_us = pps_last_edge_us_;
-  
-  uint32_t since_pps;
-  if (current_us >= pps_edge_us) {
-    since_pps = current_us - pps_edge_us;
-  } else {
-    since_pps = (0xFFFFFFFFUL - pps_edge_us) + current_us + 1;
-  }
-  
-  // 对于下降沿触发的PPS，误差就是自PPS以来的时间
-  // 因为理想情况下，PPS发生时系统时间应该是整秒
-  float error_ms = since_pps / 1000.0f;
-  
-  // 如果误差接近1000ms，实际上是接近0ms
+  // 如果误差大于500ms，转换为负数
   if (error_ms > 500.0f) {
     error_ms = error_ms - 1000.0f;
   }
@@ -173,19 +158,19 @@ void GPSNTPServer::discipline_time() {
   float adjustment = 0.0f;
   
   // 比例项
-  float Kp = 0.3f;  // 比例系数
+  float Kp = 1.0f;  // 比例系数，增加
   adjustment += Kp * error_ms;
   
   // 积分项
-  float Ki = 0.02f;  // 积分系数
+  float Ki = 0.05f;  // 积分系数，增加
   adjustment += Ki * time_discipline_.accumulated_error;
   
-  // 限制调整幅度（最大10ms）
-  if (adjustment > 10.0f) adjustment = 10.0f;
-  if (adjustment < -10.0f) adjustment = -10.0f;
+  // 限制调整幅度（最大20ms）
+  if (adjustment > 20.0f) adjustment = 20.0f;
+  if (adjustment < -20.0f) adjustment = -20.0f;
   
-  // 如果误差大于20ms，进行驯服
-  if (fabs(error_ms) > 20.0f) {
+  // 如果误差大于10ms，进行驯服
+  if (fabs(error_ms) > 10.0f) {
     time_discipline_.disciplining = true;
     
     // 调整系统时间（微秒级调整）
@@ -219,8 +204,6 @@ void GPSNTPServer::discipline_time() {
     // 误差很小，缓慢衰减累积误差
     time_discipline_.accumulated_error *= 0.95f;
   }
-  
-  time_discipline_.last_discipline = now;
 }
 
 // ==================== 处理NTP请求 ====================
@@ -247,6 +230,7 @@ void GPSNTPServer::handle_pps() {
     pps_triggered_ = false;
     pps_active_ = true;
     pps_last_stable_ = millis();
+    need_discipline_ = true;  // 触发驯服
     
     // 记录PPS间隔（用于检测PPS质量）
     static uint32_t last_pps_time = 0;
@@ -328,8 +312,11 @@ void GPSNTPServer::loop() {
   // 处理PPS
   handle_pps();
   
-  // 时间驯服
-  discipline_time();
+  // 时间驯服（由PPS触发）
+  if (need_discipline_) {
+    need_discipline_ = false;
+    discipline_time();
+  }
   
   // 处理NTP请求
   handle_ntp_request();
