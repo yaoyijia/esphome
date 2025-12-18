@@ -1,6 +1,7 @@
 #include "gps_ntp_server.h"
 #include "esphome/components/network/util.h"
 #include <sys/time.h>
+#include <math.h>  // 添加math.h头文件
 
 namespace esphome {
 namespace gps_ntp_server {
