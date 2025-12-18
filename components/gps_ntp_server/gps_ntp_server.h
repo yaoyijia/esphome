@@ -38,6 +38,7 @@ class GPSNTPServer : public Component {
   volatile bool pps_triggered_ = false;
   bool pps_active_ = false;
   uint32_t pps_last_stable_ = 0;
+  bool need_discipline_ = false;  // 新增：需要驯服的标志
   
   // NTP服务器
   WiFiUDP udp_;
