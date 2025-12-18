@@ -1,4 +1,3 @@
-
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import gps
@@ -26,4 +25,3 @@ async def to_code(config):
     
     gps_component = await cg.get_variable(config[CONF_GPS_ID])
     cg.add(var.set_gps(gps_component))
-
