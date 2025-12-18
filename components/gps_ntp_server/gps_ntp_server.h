@@ -9,7 +9,7 @@ namespace gps_ntp_server {
 class GPSNTPServer : public Component {
  public:
   void set_pps_pin(uint8_t pin) { pps_pin_ = pin; }
-  void set_gps(gps::GPS *gps) { gps_ = gps; }  // 保持与Python代码的兼容性
+  void set_gps(gps::GPS *gps) { gps_ = gps; }
   
   void setup() override;
   void loop() override;
@@ -19,7 +19,7 @@ class GPSNTPServer : public Component {
   bool is_pps_active() const { return pps_active_; }
   uint32_t get_pps_count() const { return pps_count_; }
   uint32_t get_ntp_requests() const { return ntp_requests_; }
-  float get_time_error() const { return time_discipline_.error_ms; }  // 修复这里
+  float get_time_error() const { return time_discipline_.error_ms; }
   
  protected:
   static void IRAM_ATTR pps_interrupt_handler();
@@ -51,9 +51,9 @@ class GPSNTPServer : public Component {
     float error_ms = 0.0f;           // 当前时间误差（毫秒）
     float accumulated_error = 0.0f;  // 累积误差
     float last_error = 0.0f;         // 上次误差
-    float discipline_rate = 0.001f;  // 驯服速率（每毫秒调整的微秒数）
     uint32_t last_discipline = 0;    // 上次驯服时间
     bool disciplining = false;       // 是否正在驯服
+    uint32_t discipline_count = 0;   // 驯服次数
   } time_discipline_;
   
   // 循环控制
