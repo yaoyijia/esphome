@@ -75,7 +75,6 @@ class GPSNTPServer : public Component, public gps::GPSListener {
     bool awaiting_sync = false;      // 等待PPS同步
     bool synced_once = false;        // 至少成功同步过一次
     uint32_t last_sync_millis = 0;   // 上次同步时间
-    int64_t accumulated_offset_us = 0; // 累计的微秒偏移
   } pps_sync_;
   
   // 实例指针
