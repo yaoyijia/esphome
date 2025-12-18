@@ -127,7 +127,7 @@ void GPSNTPServer::send_ntp_response(WiFiUDP &udp, IPAddress remote, int remoteP
   }
 }
 
-// ==================== 时间驯服函数 ====================
+// ==================== 时间驯服函数（简化版） ====================
 void GPSNTPServer::discipline_time() {
   // 获取当前系统时间
   struct timeval tv;
@@ -144,65 +144,68 @@ void GPSNTPServer::discipline_time() {
   // 更新误差统计
   time_discipline_.last_error = time_discipline_.error_ms;
   time_discipline_.error_ms = error_ms;
-  time_discipline_.accumulated_error += error_ms;
-  time_discipline_.discipline_count++;
   
-  // 限制累积误差，防止积分饱和
-  if (time_discipline_.accumulated_error > 1000.0f) {
-    time_discipline_.accumulated_error = 1000.0f;
-  } else if (time_discipline_.accumulated_error < -1000.0f) {
-    time_discipline_.accumulated_error = -1000.0f;
-  }
-  
-  // 计算调整量 - 使用简单的PI控制器
+  // 根据误差大小决定调整量（反向调整）
   float adjustment = 0.0f;
   
-  // 比例项
-  float Kp = 1.0f;  // 比例系数，增加
-  adjustment += Kp * error_ms;
-  
-  // 积分项
-  float Ki = 0.05f;  // 积分系数，增加
-  adjustment += Ki * time_discipline_.accumulated_error;
-  
-  // 限制调整幅度（最大20ms）
-  if (adjustment > 20.0f) adjustment = -20.0f;
-  if (adjustment < -20.0f) adjustment = 20.0f;
-  
-  // 如果误差大于10ms，进行驯服
-  if (fabs(error_ms) > 10.0f) {
-    time_discipline_.disciplining = true;
-    
-    // 调整系统时间（微秒级调整）
-    int32_t adjust_us = (int32_t)(adjustment * 1000.0f);
-    
-    struct timeval new_tv;
-    gettimeofday(&new_tv, NULL);
-    
-    // 应用调整
-    new_tv.tv_usec += adjust_us;
-    
-    // 处理进位
-    if (new_tv.tv_usec >= 1000000) {
-      new_tv.tv_sec += new_tv.tv_usec / 1000000;
-      new_tv.tv_usec %= 1000000;
-    } else if (new_tv.tv_usec < 0) {
-      new_tv.tv_sec -= (-new_tv.tv_usec / 1000000) + 1;
-      new_tv.tv_usec = 1000000 + (new_tv.tv_usec % 1000000);
-    }
-    
-    // 设置新时间
-    if (settimeofday(&new_tv, NULL) == 0) {
-      ESP_LOGI("gps_ntp", "时间驯服 #%u: 误差=%.2fms, 调整=%.2fms, 累积=%.2fms", 
-               time_discipline_.discipline_count,
-               error_ms, adjustment, time_discipline_.accumulated_error);
-    } else {
-      ESP_LOGE("gps_ntp", "时间驯服失败");
-    }
+  // 简单的反向调整逻辑
+  if (fabs(error_ms) > 400.0f) {
+    adjustment = -20.0f;  // 大误差，中等调整
+  } else if (fabs(error_ms) > 200.0f) {
+    adjustment = -10.0f;  // 中等误差，较小调整
+  } else if (fabs(error_ms) > 100.0f) {
+    adjustment = -5.0f;   // 较小误差，温和调整
+  } else if (fabs(error_ms) > 50.0f) {
+    adjustment = -2.0f;   // 小误差，轻微调整
+  } else if (fabs(error_ms) > 10.0f) {
+    adjustment = -1.0f;   // 微小误差，微调
   } else {
+    adjustment = 0.0f;    // 忽略微小误差
     time_discipline_.disciplining = false;
-    // 误差很小，缓慢衰减累积误差
-    time_discipline_.accumulated_error *= 0.95f;
+    return;
+  }
+  
+  // 确保调整方向正确（反向调整）
+  if (error_ms > 0) {
+    adjustment = -fabs(adjustment);  // 正误差，负调整
+  } else {
+    adjustment = fabs(adjustment);   // 负误差，正调整
+  }
+  
+  time_discipline_.disciplining = true;
+  time_discipline_.discipline_count++;
+  
+  // 调整系统时间
+  int32_t adjust_us = (int32_t)(adjustment * 1000.0f);
+  
+  struct timeval new_tv;
+  gettimeofday(&new_tv, NULL);
+  
+  // 应用调整
+  new_tv.tv_usec += adjust_us;
+  
+  // 处理进位
+  if (new_tv.tv_usec >= 1000000) {
+    new_tv.tv_sec += new_tv.tv_usec / 1000000;
+    new_tv.tv_usec %= 1000000;
+  } else if (new_tv.tv_usec < 0) {
+    new_tv.tv_sec -= (-new_tv.tv_usec / 1000000) + 1;
+    new_tv.tv_usec = 1000000 + (new_tv.tv_usec % 1000000);
+  }
+  
+  // 设置新时间
+  if (settimeofday(&new_tv, NULL) == 0) {
+    // 获取调整后的误差
+    struct timeval after_tv;
+    gettimeofday(&after_tv, NULL);
+    float after_error_ms = after_tv.tv_usec / 1000.0f;
+    if (after_error_ms > 500.0f) after_error_ms = after_error_ms - 1000.0f;
+    
+    ESP_LOGI("gps_ntp", "时间驯服 #%u: 前误差=%.2fms, 调整=%.2fms, 后误差=%.2fms", 
+             time_discipline_.discipline_count,
+             error_ms, adjustment, after_error_ms);
+  } else {
+    ESP_LOGE("gps_ntp", "时间驯服失败");
   }
 }
 
