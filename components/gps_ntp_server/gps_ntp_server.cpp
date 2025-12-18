@@ -166,8 +166,8 @@ void GPSNTPServer::discipline_time() {
   adjustment += Ki * time_discipline_.accumulated_error;
   
   // 限制调整幅度（最大20ms）
-  if (adjustment > 20.0f) adjustment = 20.0f;
-  if (adjustment < -20.0f) adjustment = -20.0f;
+  if (adjustment > 20.0f) adjustment = -20.0f;
+  if (adjustment < -20.0f) adjustment = 20.0f;
   
   // 如果误差大于10ms，进行驯服
   if (fabs(error_ms) > 10.0f) {
