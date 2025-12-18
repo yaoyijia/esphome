@@ -154,7 +154,7 @@ void GPSNTPServer::handle_pps() {
     }
     
     // 检查PPS间隔是否稳定（900ms-1100ms）
-    if (interval_us > 900000 && interval_us < 1100000) {
+    if (interval_us > 700000 && interval_us < 1300000) {
       // 每分钟输出一次详细日志
       if (pps_count_ % 60 == 0) {
         ESP_LOGD("gps_ntp", "PPS #%u, 间隔: %.3fms", 
