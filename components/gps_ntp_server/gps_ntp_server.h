@@ -20,6 +20,7 @@ class GPSNTPServer : public Component {
   uint32_t get_pps_count() const { return pps_count_; }
   uint32_t get_ntp_requests() const { return ntp_requests_; }
   float get_time_error() const { return time_discipline_.error_ms; }
+  bool is_disciplining() const { return time_discipline_.disciplining; }
   
  protected:
   static void IRAM_ATTR pps_interrupt_handler();
@@ -38,7 +39,6 @@ class GPSNTPServer : public Component {
   volatile bool pps_triggered_ = false;
   bool pps_active_ = false;
   uint32_t pps_last_stable_ = 0;
-  bool need_discipline_ = false;  // 新增：需要驯服的标志
   
   // NTP服务器
   WiFiUDP udp_;
@@ -50,11 +50,11 @@ class GPSNTPServer : public Component {
   // 时间驯服相关
   struct {
     float error_ms = 0.0f;           // 当前时间误差（毫秒）
-    float accumulated_error = 0.0f;  // 累积误差
     float last_error = 0.0f;         // 上次误差
     uint32_t last_discipline = 0;    // 上次驯服时间
     bool disciplining = false;       // 是否正在驯服
     uint32_t discipline_count = 0;   // 驯服次数
+    uint32_t skip_count = 0;         // 跳过次数
   } time_discipline_;
   
   // 循环控制
