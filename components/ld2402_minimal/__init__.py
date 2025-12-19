@@ -1,0 +1,24 @@
+import esphome.codegen as cg
+from esphome.components import uart
+import esphome.config_validation as cv
+from esphome.const import CONF_ID
+
+CODEOWNERS = ["@your_username"]
+
+DEPENDENCIES = ["uart"]
+AUTO_LOAD = ["sensor"]
+
+ld2402_minimal_ns = cg.esphome_ns.namespace("ld2402_minimal")
+LD2402Minimal = ld2402_minimal_ns.class_("LD2402Minimal", cg.Component, uart.UARTDevice)
+
+CONFIG_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(): cv.declare_id(LD2402Minimal),
+    }
+).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA)
+
+
+async def to_code(config):
+    var = cg.new_Pvariable(config[CONF_ID])
+    await cg.register_component(var, config)
+    await uart.register_uart_device(var, config)
