@@ -127,16 +127,20 @@ void GPSNTPServer::send_ntp_response(WiFiUDP &udp, IPAddress remote, int remoteP
   }
 }
 
-// ==================== 时间驯服函数 ====================
+// ==================== 时间驯服函数（PPS触发时调用） ====================
 void GPSNTPServer::discipline_time() {
+  if (!pps_active_) return;
+  
   // 获取当前系统时间
   struct timeval tv;
   gettimeofday(&tv, NULL);
   
-  // 计算误差（微秒部分，转换为毫秒）
-  float error_ms = tv.tv_usec / 1000.0f;
+  // 计算当前微秒部分（0-999999微秒）
+  uint32_t current_us = tv.tv_usec;
+  float current_ms = current_us / 1000.0f;
   
-  // 如果误差大于500ms，转换为负数
+  // 将误差归一化到-500ms到+500ms范围
+  float error_ms = current_ms;
   if (error_ms > 500.0f) {
     error_ms = error_ms - 1000.0f;
   }
@@ -144,65 +148,55 @@ void GPSNTPServer::discipline_time() {
   // 更新误差统计
   time_discipline_.last_error = time_discipline_.error_ms;
   time_discipline_.error_ms = error_ms;
-  time_discipline_.accumulated_error += error_ms;
   time_discipline_.discipline_count++;
   
-  // 限制累积误差，防止积分饱和
-  if (time_discipline_.accumulated_error > 1000.0f) {
-    time_discipline_.accumulated_error = 1000.0f;
-  } else if (time_discipline_.accumulated_error < -1000.0f) {
-    time_discipline_.accumulated_error = -1000.0f;
-  }
-  
-  // 计算调整量 - 使用简单的PI控制器
+  // 直接根据误差大小进行调整（简单粗暴）
   float adjustment = 0.0f;
   
-  // 比例项
-  float Kp = 1.0f;  // 比例系数，增加
-  adjustment += Kp * error_ms;
-  
-  // 积分项
-  float Ki = 0.05f;  // 积分系数，增加
-  adjustment += Ki * time_discipline_.accumulated_error;
-  
-  // 限制调整幅度（最大20ms）
-  if (adjustment > 20.0f) adjustment = -20.0f;
-  if (adjustment < -20.0f) adjustment = 20.0f;
-  
-  // 如果误差大于10ms，进行驯服
-  if (fabs(error_ms) > 10.0f) {
-    time_discipline_.disciplining = true;
-    
-    // 调整系统时间（微秒级调整）
-    int32_t adjust_us = (int32_t)(adjustment * 1000.0f);
-    
-    struct timeval new_tv;
-    gettimeofday(&new_tv, NULL);
-    
-    // 应用调整
-    new_tv.tv_usec += adjust_us;
-    
-    // 处理进位
-    if (new_tv.tv_usec >= 1000000) {
-      new_tv.tv_sec += new_tv.tv_usec / 1000000;
-      new_tv.tv_usec %= 1000000;
-    } else if (new_tv.tv_usec < 0) {
-      new_tv.tv_sec -= (-new_tv.tv_usec / 1000000) + 1;
-      new_tv.tv_usec = 1000000 + (new_tv.tv_usec % 1000000);
-    }
-    
-    // 设置新时间
-    if (settimeofday(&new_tv, NULL) == 0) {
-      ESP_LOGI("gps_ntp", "时间驯服 #%u: 误差=%.2fms, 调整=%.2fms, 累积=%.2fms", 
-               time_discipline_.discipline_count,
-               error_ms, adjustment, time_discipline_.accumulated_error);
-    } else {
-      ESP_LOGE("gps_ntp", "时间驯服失败");
-    }
+  if (fabs(error_ms) > 100.0f) {
+    adjustment = -error_ms * 0.5f;  // 大误差，快速调整
+  } else if (fabs(error_ms) > 50.0f) {
+    adjustment = -error_ms * 0.3f;  // 中误差，中等调整
+  } else if (fabs(error_ms) > 10.0f) {
+    adjustment = -error_ms * 0.1f;  // 小误差，精细调整
+  } else if (fabs(error_ms) > 1.0f) {
+    adjustment = -error_ms * 0.05f;  // 微小误差，微调
   } else {
     time_discipline_.disciplining = false;
-    // 误差很小，缓慢衰减累积误差
-    time_discipline_.accumulated_error *= 0.95f;
+    return;  // 误差很小，不调整
+  }
+  
+  // 限制调整幅度（最大30ms）
+  if (adjustment > 30.0f) adjustment = 30.0f;
+  if (adjustment < -30.0f) adjustment = -30.0f;
+  
+  time_discipline_.disciplining = true;
+  
+  // 调整系统时间（微秒级调整）
+  int32_t adjust_us = (int32_t)(adjustment * 1000.0f);
+  
+  struct timeval new_tv;
+  gettimeofday(&new_tv, NULL);
+  
+  // 应用调整
+  new_tv.tv_usec += adjust_us;
+  
+  // 处理进位
+  if (new_tv.tv_usec >= 1000000) {
+    new_tv.tv_sec += new_tv.tv_usec / 1000000;
+    new_tv.tv_usec %= 1000000;
+  } else if (new_tv.tv_usec < 0) {
+    new_tv.tv_sec -= (-new_tv.tv_usec / 1000000) + 1;
+    new_tv.tv_usec = 1000000 + (new_tv.tv_usec % 1000000);
+  }
+  
+  // 设置新时间
+  if (settimeofday(&new_tv, NULL) == 0) {
+    ESP_LOGI("gps_ntp", "时间驯服 #%u: 当前=%.2fms, 误差=%.2fms, 调整=%.2fms", 
+             time_discipline_.discipline_count,
+             current_ms, error_ms, adjustment);
+  } else {
+    ESP_LOGE("gps_ntp", "时间驯服失败");
   }
 }
 
@@ -230,7 +224,9 @@ void GPSNTPServer::handle_pps() {
     pps_triggered_ = false;
     pps_active_ = true;
     pps_last_stable_ = millis();
-    need_discipline_ = true;  // 触发驯服
+    
+    // PPS发生时立即进行时间驯服
+    discipline_time();
     
     // 记录PPS间隔（用于检测PPS质量）
     static uint32_t last_pps_time = 0;
@@ -311,12 +307,6 @@ void GPSNTPServer::loop() {
   
   // 处理PPS
   handle_pps();
-  
-  // 时间驯服（由PPS触发）
-  if (need_discipline_) {
-    need_discipline_ = false;
-    discipline_time();
-  }
   
   // 处理NTP请求
   handle_ntp_request();
