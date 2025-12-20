@@ -32,7 +32,7 @@ CONF_HEART_RATE_RAW = "heart_rate_raw"
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(LD2402Minimal),
-        cv.Optional(CONF_DISTANCE): sensor.sensor_schema(
+        cv.Optional(CONF_GATE_NUMBER, default=3): cv.int_range(min=1, max=16),
             unit_of_measurement=UNIT_CENTIMETER,
             icon=ICON_MOTION_SENSOR,
             accuracy_decimals=0,
@@ -75,6 +75,11 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)
+    
+    # 设置距离门编号
+    if CONF_GATE_NUMBER in config:
+        cg.add(var.set_gate_number(config[CONF_GATE_NUMBER]))
+
     
     # 设置距离传感器
     if CONF_DISTANCE in config:
