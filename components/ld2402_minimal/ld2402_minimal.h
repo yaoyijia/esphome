@@ -18,7 +18,8 @@ class LD2402Minimal : public Component, public uart::UARTDevice {
   void set_heart_rate_sensor(sensor::Sensor *sensor) { heart_rate_sensor_ = sensor; }
   void set_breath_rate_sensor(sensor::Sensor *sensor) { breath_rate_sensor_ = sensor; }
   void set_heart_rate_raw_sensor(sensor::Sensor *sensor) { heart_rate_raw_sensor_ = sensor; }
-  
+  void set_gate_number(uint8_t gate) { gate_number_ = gate; }
+
   void setup() override;
   void loop() override;
   float get_setup_priority() const override { return setup_priority::BUS; }
@@ -65,7 +66,10 @@ class LD2402Minimal : public Component, public uart::UARTDevice {
   uint32_t last_analysis_time_{0};
   uint32_t last_sample_time_{0};
   bool initialized_{false};
-  
+
+  // 距离门配置
+  uint8_t gate_number_{3}; 
+
   // 当前状态
   uint16_t distance_{0};
   uint8_t detection_state_{0};
