@@ -3,6 +3,7 @@
 #include "esphome/core/helpers.h"
 #include <cmath>
 #include <algorithm>
+#include <numeric>
 
 namespace esphome::ld2402_minimal {
 
@@ -52,6 +53,13 @@ void LD2402Minimal::setup() {
   
   initialized_ = true;
   ESP_LOGI(TAG, "LD2402 initialized in energy mode");
+}
+
+void LD2402Minimal::dump_config() {
+  ESP_LOGCONFIG(TAG, "LD2402 Minimal Component:");
+  ESP_LOGCONFIG(TAG, "  UART: TX=%d, RX=%d, Baud=115200", 1, 3);  // 根据实际引脚修改
+  ESP_LOGCONFIG(TAG, "  Heart rate analysis: enabled");
+  ESP_LOGCONFIG(TAG, "  Breath rate analysis: enabled");
 }
 
 void LD2402Minimal::send_config_command(const uint8_t *cmd, size_t len) {
@@ -135,16 +143,12 @@ void LD2402Minimal::parse_energy_frame(const uint8_t *buffer, uint16_t len) {
   
   // 采集能量数据用于心率分析（仅在有人且距离合适时）
   if (detection_state_ != 0x00 && distance_ > 0 && distance_ < 400) {
-    // 计算要使用的距离门位置
-    const uint8_t ENERGY_BYTES_PER_GATE = 4;  // 每个距离门4字节
+    // 计算第3个距离门的位置（每个距离门4字节）
+    const uint8_t GATE_NUMBER = 3;  // 第3个距离门
+    const uint8_t ENERGY_BYTES_PER_GATE = 4;
     
-    // 确保距离门编号在有效范围内 (1-16)
-    uint8_t gate_to_use = gate_number_;
-    if (gate_to_use < 1) gate_to_use = 1;
-    if (gate_to_use > 16) gate_to_use = 16;
-    
-    // 计算距离门位置：帧头4 + 长度2 + 检测结果1 + 距离2 + (gate-1)*4
-    uint16_t energy_start_pos = 9 + ((gate_to_use - 1) * ENERGY_BYTES_PER_GATE);
+    // 计算位置：帧头4 + 长度2 + 检测结果1 + 距离2 + (GATE_NUMBER-1)*4
+    uint16_t energy_start_pos = 9 + ((GATE_NUMBER - 1) * ENERGY_BYTES_PER_GATE);
     
     if (len >= energy_start_pos + ENERGY_BYTES_PER_GATE) {
       // 读取4字节的能量值（小端格式）
@@ -168,41 +172,23 @@ void LD2402Minimal::parse_energy_frame(const uint8_t *buffer, uint16_t len) {
       static uint32_t last_debug_time = 0;
       uint32_t now = millis();
       if (now - last_debug_time > 5000) {
-        // 还可以读取并显示前几个距离门的能量值进行比较
-        uint32_t gate1_energy = 0, gate2_energy = 0, gate3_energy = 0;
-        
-        if (len >= 13) memcpy(&gate1_energy, &buffer[9], 4);
-        if (len >= 17) memcpy(&gate2_energy, &buffer[13], 4);
-        if (len >= 21) memcpy(&gate3_energy, &buffer[17], 4);
-        
-        const char* state_str = "未知";
-        if (detection_state_ == 0x00) state_str = "无人";
-        else if (detection_state_ == 0x01) state_str = "有人移动";
-        else if (detection_state_ == 0x02) state_str = "有人静止";
-        
-        ESP_LOGD(TAG, "状态: %s, 距离: %d cm, 使用距离门: %d", 
-                 state_str, distance_, gate_to_use);
-        ESP_LOGD(TAG, "能量值 - 门1: %lu, 门2: %lu, 门3: %lu", 
-                 gate1_energy, gate2_energy, gate3_energy);
+        ESP_LOGD(TAG, "Gate %d energy: %lu, history size: %d", 
+                 GATE_NUMBER, gate_energy, energy_history_.size());
         last_debug_time = now;
       }
-    } else {
-      ESP_LOGW(TAG, "数据帧太短，无法读取第%d个距离门", gate_to_use);
     }
   } else {
     // 无人时清空历史数据
     if (!energy_history_.empty()) {
-      ESP_LOGD(TAG, "无人状态，清空能量历史数据");
       energy_history_.clear();
     }
   }
-}
   
-  // 调试日志
+  // 调试日志（每秒最多输出一次）
   static uint32_t last_log_ms = 0;
   uint32_t now = millis();
   if (now - last_log_ms > 2000) {
-    const char* state_str = "未知";
+    const char* state_str = "Unknown";
     if (detection_state_ == 0x00) state_str = "无人";
     else if (detection_state_ == 0x01) state_str = "有人移动";
     else if (detection_state_ == 0x02) state_str = "有人静止";
@@ -334,8 +320,6 @@ float LD2402Minimal::calculate_breath_rate() {
 
 void LD2402Minimal::apply_bandpass_filter(float *data, uint16_t len, float low_freq, float high_freq) {
   // 简单的IIR带通滤波器实现
-  // 注意：这是一个简化版本，实际应用可能需要更复杂的滤波器
-  
   if (len < 2) return;
   
   // 计算滤波器系数
@@ -346,34 +330,38 @@ void LD2402Minimal::apply_bandpass_filter(float *data, uint16_t len, float low_f
   float alpha_high = rc_high / (rc_high + dt);
   
   // 应用滤波器
+  std::vector<float> filtered(len);
   float prev_low = data[0];
   float prev_high = data[0];
   
-  for (uint16_t i = 1; i < len; i++) {
+  for (uint16_t i = 0; i < len; i++) {
     // 低通部分
     float lowpass = prev_low + alpha_low * (data[i] - prev_low);
     
     // 高通部分
-    float highpass = alpha_high * (prev_high + data[i] - data[i-1]);
+    float highpass = alpha_high * (prev_high + data[i] - (i > 0 ? data[i-1] : 0));
     
     // 带通 = 高通 + 低通
-    data[i] = highpass + (lowpass - prev_low);
+    filtered[i] = highpass + (lowpass - prev_low);
     
     prev_low = lowpass;
     prev_high = highpass;
+  }
+  
+  // 复制回原始数组
+  for (uint16_t i = 0; i < len; i++) {
+    data[i] = filtered[i];
   }
 }
 
 float LD2402Minimal::find_peak_frequency(const float *data, uint16_t len, float min_freq, float max_freq) {
   // 简单峰值检测算法（零交叉法）
-  // 注意：这是一个简化版本，对于复杂信号可能需要FFT
-  
   if (len < 4) return 0.0f;
   
   // 寻找过零点
   int zero_crossings = 0;
   for (uint16_t i = 1; i < len; i++) {
-    if (data[i-1] * data[i] < 0) {  // 符号变化
+    if ((data[i-1] < 0 && data[i] >= 0) || (data[i-1] >= 0 && data[i] < 0)) {
       zero_crossings++;
     }
   }
