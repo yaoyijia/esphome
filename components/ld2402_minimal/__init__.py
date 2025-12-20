@@ -27,6 +27,7 @@ CONF_DETECTION_STATE = "detection_state"
 CONF_HEART_RATE = "heart_rate"
 CONF_BREATH_RATE = "breath_rate"
 CONF_HEART_RATE_RAW = "heart_rate_raw"
+CONF_GATE_NUMBER = "gate_number"
 
 # 配置模式
 CONFIG_SCHEMA = cv.Schema(
@@ -71,7 +72,7 @@ FINAL_VALIDATE_SCHEMA = uart.final_validate_device_schema(
 
 
 async def to_code(config):
-    """生成代码"""
+
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)
