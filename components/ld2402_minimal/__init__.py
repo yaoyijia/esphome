@@ -1,6 +1,6 @@
 """
 LD2402 Minimal Component for ESPHome
-极简的LD2402毫米波雷达组件，包含心率检测功能（实验性）
+极简的LD2402毫米波雷达组件
 """
 import esphome.codegen as cg
 import esphome.config_validation as cv
@@ -27,14 +27,12 @@ CONF_DETECTION_STATE = "detection_state"
 CONF_HEART_RATE = "heart_rate"
 CONF_BREATH_RATE = "breath_rate"
 CONF_HEART_RATE_RAW = "heart_rate_raw"
-CONF_GATE_NUMBER = "gate_number"
 
 # 配置模式
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(LD2402Minimal),
-        cv.Optional(CONF_GATE_NUMBER, default=3): cv.int_range(min=1, max=16),
-        cv.Optional(CONF_DISTANCE): sensor.sensor_schema(        
+        cv.Optional(CONF_DISTANCE): sensor.sensor_schema(
             unit_of_measurement=UNIT_CENTIMETER,
             icon=ICON_MOTION_SENSOR,
             accuracy_decimals=0,
@@ -73,15 +71,10 @@ FINAL_VALIDATE_SCHEMA = uart.final_validate_device_schema(
 
 
 async def to_code(config):
-
+    """生成代码"""
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)
-    
-    # 设置距离门编号
-    if CONF_GATE_NUMBER in config:
-        cg.add(var.set_gate_number(config[CONF_GATE_NUMBER]))
-
     
     # 设置距离传感器
     if CONF_DISTANCE in config:
