@@ -12,6 +12,7 @@ static const char *const TAG = "ld2402_with_hr";
 const float LD2402WithHR::SAMPLING_RATE = 6.06f;        // 6.06Hz (1000ms/165ms)
 const uint16_t LD2402WithHR::HR_ANALYSIS_INTERVAL_MS = 5000;  // 5秒
 
+// 构造函数定义
 LD2402WithHR::LD2402WithHR() : energy_history_(SIGNAL_BUFFER_SIZE, 0.0f) {}
 
 void LD2402WithHR::setup() {
