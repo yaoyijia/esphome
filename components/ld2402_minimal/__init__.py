@@ -53,7 +53,6 @@ CONFIG_SCHEMA = cv.Schema(
             accuracy_decimals=1,
         ),
         cv.Optional(CONF_HEART_RATE_RAW): sensor.sensor_schema(
-            name="Heart Rate Raw",
             icon="mdi:chart-line",
             accuracy_decimals=0,
         ),
