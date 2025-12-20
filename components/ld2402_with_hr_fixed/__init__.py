@@ -11,8 +11,6 @@ from esphome.const import (
     UNIT_CENTIMETER,
     UNIT_BEATS_PER_MINUTE,
     ICON_MOTION_SENSOR,
-    ICON_HEART_PULSE,
-    ICON_LUNGS,
     DEVICE_CLASS_DISTANCE,
 )
 
@@ -21,8 +19,8 @@ CODEOWNERS = ["@your_username"]
 DEPENDENCIES = ["uart"]
 AUTO_LOAD = ["sensor"]
 
-# 命名空间 - 使用与C++代码一致的名字
-ld2402_with_hr_ns = cg.esphome_ns.namespace("ld2402_with_hr")  # C++中仍然是ld2402_with_hr命名空间
+# 命名空间
+ld2402_with_hr_ns = cg.esphome_ns.namespace("ld2402_with_hr")
 LD2402WithHR = ld2402_with_hr_ns.class_("LD2402WithHR", cg.Component, uart.UARTDevice)
 
 # 配置常量
@@ -30,7 +28,7 @@ CONF_DETECTION_STATE = "detection_state"
 CONF_HEART_RATE = "heart_rate"
 CONF_BREATH_RATE = "breath_rate"
 
-# 配置模式 - 平台名称改为ld2402_with_hr_fixed
+# 配置模式
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(LD2402WithHR),
@@ -46,12 +44,12 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         cv.Optional(CONF_HEART_RATE): sensor.sensor_schema(
             unit_of_measurement=UNIT_BEATS_PER_MINUTE,
-            icon=ICON_HEART_PULSE,
+            icon="mdi:heart-pulse",  # 直接使用字符串，而不是ICON_HEART_PULSE常量
             accuracy_decimals=0,
         ),
         cv.Optional(CONF_BREATH_RATE): sensor.sensor_schema(
             unit_of_measurement=UNIT_BEATS_PER_MINUTE,
-            icon=ICON_LUNGS,
+            icon="mdi:lungs",  # 直接使用字符串，而不是ICON_LUNGS常量
             accuracy_decimals=1,
         ),
     }
@@ -59,7 +57,7 @@ CONFIG_SCHEMA = cv.Schema(
 
 # UART配置验证
 FINAL_VALIDATE_SCHEMA = uart.final_validate_device_schema(
-    "ld2402_with_hr_fixed",  # 平台名称
+    "ld2402_with_hr_fixed",
     require_tx=True,
     require_rx=True,
     baud_rate=115200,
