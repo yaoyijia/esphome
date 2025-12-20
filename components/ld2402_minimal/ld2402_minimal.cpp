@@ -144,7 +144,7 @@ void LD2402Minimal::parse_energy_frame(const uint8_t *buffer, uint16_t len) {
   // 采集能量数据用于心率分析（仅在有人且距离合适时）
   if (detection_state_ != 0x00 && distance_ > 0 && distance_ < 400) {
     // 计算第3个距离门的位置（每个距离门4字节）
-    const uint8_t GATE_NUMBER = 3;  // 第3个距离门
+    const uint8_t GATE_NUMBER = 19;  // 第3个距离门
     const uint8_t ENERGY_BYTES_PER_GATE = 4;
     
     // 计算位置：帧头4 + 长度2 + 检测结果1 + 距离2 + (GATE_NUMBER-1)*4
