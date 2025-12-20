@@ -34,6 +34,7 @@ CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(LD2402Minimal),
         cv.Optional(CONF_GATE_NUMBER, default=3): cv.int_range(min=1, max=16),
+        cv.Optional(CONF_DISTANCE): sensor.sensor_schema(        
             unit_of_measurement=UNIT_CENTIMETER,
             icon=ICON_MOTION_SENSOR,
             accuracy_decimals=0,
