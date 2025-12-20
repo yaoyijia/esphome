@@ -135,10 +135,21 @@ void LD2402Minimal::parse_energy_frame(const uint8_t *buffer, uint16_t len) {
   
   // 采集能量数据用于心率分析（仅在有人且距离合适时）
   if (detection_state_ != 0x00 && distance_ > 0 && distance_ < 400) {
-    // 提取第一个距离门的运动能量值（最可能对应人体）
-    uint16_t gate_energy;
-    if (len >= 13) {  // 确保有足够的长度
-      memcpy(&gate_energy, &buffer[9], 2);  // 第一个距离门的能量值
+    // 计算要使用的距离门位置
+    const uint8_t ENERGY_BYTES_PER_GATE = 4;  // 每个距离门4字节
+    
+    // 确保距离门编号在有效范围内 (1-16)
+    uint8_t gate_to_use = gate_number_;
+    if (gate_to_use < 1) gate_to_use = 1;
+    if (gate_to_use > 16) gate_to_use = 16;
+    
+    // 计算距离门位置：帧头4 + 长度2 + 检测结果1 + 距离2 + (gate-1)*4
+    uint16_t energy_start_pos = 9 + ((gate_to_use - 1) * ENERGY_BYTES_PER_GATE);
+    
+    if (len >= energy_start_pos + ENERGY_BYTES_PER_GATE) {
+      // 读取4字节的能量值（小端格式）
+      uint32_t gate_energy = 0;
+      memcpy(&gate_energy, &buffer[energy_start_pos], sizeof(gate_energy));
       
       // 存储到历史缓冲区
       energy_history_.push_back(static_cast<float>(gate_energy));
@@ -152,11 +163,40 @@ void LD2402Minimal::parse_energy_frame(const uint8_t *buffer, uint16_t len) {
       if (heart_rate_raw_sensor_) {
         heart_rate_raw_sensor_->publish_state(gate_energy);
       }
+      
+      // 调试输出
+      static uint32_t last_debug_time = 0;
+      uint32_t now = millis();
+      if (now - last_debug_time > 5000) {
+        // 还可以读取并显示前几个距离门的能量值进行比较
+        uint32_t gate1_energy = 0, gate2_energy = 0, gate3_energy = 0;
+        
+        if (len >= 13) memcpy(&gate1_energy, &buffer[9], 4);
+        if (len >= 17) memcpy(&gate2_energy, &buffer[13], 4);
+        if (len >= 21) memcpy(&gate3_energy, &buffer[17], 4);
+        
+        const char* state_str = "未知";
+        if (detection_state_ == 0x00) state_str = "无人";
+        else if (detection_state_ == 0x01) state_str = "有人移动";
+        else if (detection_state_ == 0x02) state_str = "有人静止";
+        
+        ESP_LOGD(TAG, "状态: %s, 距离: %d cm, 使用距离门: %d", 
+                 state_str, distance_, gate_to_use);
+        ESP_LOGD(TAG, "能量值 - 门1: %lu, 门2: %lu, 门3: %lu", 
+                 gate1_energy, gate2_energy, gate3_energy);
+        last_debug_time = now;
+      }
+    } else {
+      ESP_LOGW(TAG, "数据帧太短，无法读取第%d个距离门", gate_to_use);
     }
   } else {
     // 无人时清空历史数据
-    energy_history_.clear();
+    if (!energy_history_.empty()) {
+      ESP_LOGD(TAG, "无人状态，清空能量历史数据");
+      energy_history_.clear();
+    }
   }
+}
   
   // 调试日志
   static uint32_t last_log_ms = 0;
