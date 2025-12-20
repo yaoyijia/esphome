@@ -1,49 +1,65 @@
-#include "ld2402_with_hr.h"
+#include "ld2402_minimal.h"
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
+#include <cmath>
 #include <algorithm>
-#include <cstring>
 
-namespace esphome::ld2402_with_hr {
+namespace esphome::ld2402_minimal {
 
-static const char *const TAG = "ld2402_with_hr";
+static const char *const TAG = "ld2402_minimal";
 
-// 常量定义
-const float LD2402WithHR::SAMPLING_RATE = 6.06f;        // 6.06Hz (1000ms/165ms)
-const uint16_t LD2402WithHR::HR_ANALYSIS_INTERVAL_MS = 10000;  // 10秒
+// 静态常量定义
+const float LD2402Minimal::SAMPLING_RATE = 6.06f;  // 165ms间隔 ≈ 6.06Hz
 
-// 初始化向量
-static std::vector<float> initialize_vector() {
-  return std::vector<float>(LD2402WithHR::SIGNAL_BUFFER_SIZE, 0.0f);
-}
-
-LD2402WithHR::LD2402WithHR() : energy_history_(initialize_vector()) {}
-
-void LD2402WithHR::setup() {
-  // 等待模块启动
-  delay(500);
+void LD2402Minimal::setup() {
+  ESP_LOGI(TAG, "Initializing LD2402...");
   
-  ESP_LOGI(TAG, "Initializing LD2402 with heart rate detection...");
+  // 命令：进入配置模式
+  uint8_t enable_cmd[] = {
+    0xFD, 0xFC, 0xFB, 0xFA,  // 帧头
+    0x04, 0x00,              // 长度: 4字节
+    0xFF, 0x00,              // 命令: 0x00FF (使能配置)
+    0x02, 0x00,              // 协议版本: 2
+    0x04, 0x03, 0x02, 0x01   // 帧尾
+  };
+  send_config_command(enable_cmd, sizeof(enable_cmd));
+  delay(50);
   
-  // 1. 进入配置模式
-  uint8_t enable_cmd[] = {0x02, 0x00};  // 协议版本2.0
-  send_config_command(0x00FF, enable_cmd, 2);
-  delay(100);
+  // 命令：设置为工程模式（能量输出模式）
+  uint8_t mode_cmd[] = {
+    0xFD, 0xFC, 0xFB, 0xFA,  // 帧头
+    0x08, 0x00,              // 长度: 8字节
+    0x12, 0x00,              // 命令: 0x0012 (配置系统参数)
+    0x00, 0x00,              // 参数ID: 0x0000
+    0x04, 0x00, 0x00, 0x00,  // 参数值: 0x00000004 (工程模式)
+    0x04, 0x03, 0x02, 0x01   // 帧尾
+  };
+  send_config_command(mode_cmd, sizeof(mode_cmd));
+  delay(50);
   
-  // 2. 设置为工程模式（能量输出模式）
-  uint8_t mode_cmd[] = {0x00, 0x00, 0x04, 0x00, 0x00, 0x00};
-  send_config_command(0x0012, mode_cmd, 6);
-  delay(100);
+  // 命令：退出配置模式
+  uint8_t disable_cmd[] = {
+    0xFD, 0xFC, 0xFB, 0xFA,  // 帧头
+    0x02, 0x00,              // 长度: 2字节
+    0xFE, 0x00,              // 命令: 0x00FE (禁用配置)
+    0x04, 0x03, 0x02, 0x01   // 帧尾
+  };
+  send_config_command(disable_cmd, sizeof(disable_cmd));
+  delay(50);
   
-  // 3. 退出配置模式
-  send_config_command(0x00FE);
-  delay(100);
+  // 初始化能量历史缓冲区
+  energy_history_.clear();
   
   initialized_ = true;
-  ESP_LOGI(TAG, "LD2402 initialized successfully");
+  ESP_LOGI(TAG, "LD2402 initialized in energy mode");
 }
 
-void LD2402WithHR::loop() {
+void LD2402Minimal::send_config_command(const uint8_t *cmd, size_t len) {
+  write_array(cmd, len);
+  ESP_LOGV(TAG, "Sent config command, length: %d", len);
+}
+
+void LD2402Minimal::loop() {
   // 读取串口数据
   while (available()) {
     uint8_t byte = read();
@@ -64,61 +80,34 @@ void LD2402WithHR::loop() {
       
       if (footer == ENERGY_FRAME_FOOTER) {
         // 检查帧头 F4 F3 F2 F1
-        if (buffer_pos_ >= 12) {
-          uint32_t header;
-          memcpy(&header, buffer_, 4);
-          
-          if (header == ENERGY_FRAME_HEADER) {
-            parse_energy_frame(buffer_, buffer_pos_);
-          } else {
-            ESP_LOGW(TAG, "Invalid header: 0x%08X", header);
-          }
+        uint32_t header;
+        memcpy(&header, buffer_, 4);
+        
+        if (header == ENERGY_FRAME_HEADER) {
+          parse_energy_frame(buffer_, buffer_pos_);
+        } else {
+          ESP_LOGW(TAG, "Invalid header: 0x%08X", header);
         }
-        buffer_pos_ = 0;  // 清空缓冲区
+        
+        buffer_pos_ = 0;
       }
     }
   }
-}
-
-void LD2402WithHR::send_config_command(uint16_t command, const uint8_t* data, uint8_t data_len) {
-  uint8_t frame[64];
-  uint8_t pos = 0;
   
-  // 帧头
-  uint32_t header = 0xFAFBFCFD;
-  memcpy(&frame[pos], &header, 4);
-  pos += 4;
-  
-  // 长度
-  uint16_t length = 2 + data_len;
-  memcpy(&frame[pos], &length, 2);
-  pos += 2;
-  
-  // 命令
-  memcpy(&frame[pos], &command, 2);
-  pos += 2;
-  
-  // 数据
-  if (data && data_len > 0) {
-    memcpy(&frame[pos], data, data_len);
-    pos += data_len;
+  // 定期分析生命体征
+  if (initialized_ && millis() - last_analysis_time_ > HEART_RATE_INTERVAL) {
+    analyze_vital_signs();
+    last_analysis_time_ = millis();
   }
-  
-  // 帧尾
-  uint32_t footer = 0x01020304;
-  memcpy(&frame[pos], &footer, 4);
-  pos += 4;
-  
-  write_array(frame, pos);
-  delay(50);
 }
 
-void LD2402WithHR::parse_energy_frame(const uint8_t* buffer, uint16_t len) {
+void LD2402Minimal::parse_energy_frame(const uint8_t *buffer, uint16_t len) {
   if (len < 12) {
+    ESP_LOGW(TAG, "Frame too short: %d bytes", len);
     return;
   }
   
-  // 获取数据长度
+  // 获取数据长度 (小端)
   uint16_t data_length;
   memcpy(&data_length, &buffer[4], 2);
   
@@ -129,13 +118,11 @@ void LD2402WithHR::parse_energy_frame(const uint8_t* buffer, uint16_t len) {
     return;
   }
   
-  // 解析检测结果
+  // 解析检测结果 (位置: 6)
   detection_state_ = buffer[6];
   
-  // 解析距离
-  uint16_t distance;
-  memcpy(&distance, &buffer[7], 2);
-  distance_ = distance;
+  // 解析距离 (位置: 7-8，小端)
+  memcpy(&distance_, &buffer[7], 2);
   
   // 发布基础传感器数据
   if (distance_sensor_) {
@@ -146,238 +133,225 @@ void LD2402WithHR::parse_energy_frame(const uint8_t* buffer, uint16_t len) {
     state_sensor_->publish_state(detection_state_);
   }
   
-  // 只在检测到有人时进行心率检测
-  if (detection_state_ == DETECTION_MOVING || detection_state_ == DETECTION_STILL) {
-    consecutive_person_frames_++;
-    tracking_person_ = true;
-    
-    // 使用第一个距离门的能量值（假设人体在最近的距离门）
+  // 采集能量数据用于心率分析（仅在有人且距离合适时）
+  if (detection_state_ != 0x00 && distance_ > 0 && distance_ < 400) {
+    // 提取第一个距离门的运动能量值（最可能对应人体）
     uint16_t gate_energy;
-    memcpy(&gate_energy, &buffer[9], sizeof(gate_energy));
-    
-    // 检查并分析生命体征
-    check_and_analyze_vital_signs(gate_energy);
-    
-    // 调试输出
-    static uint32_t last_log_ms = 0;
-    uint32_t now = millis();
-    if (now - last_log_ms > 2000) {  // 每2秒输出一次
-      const char* state_str = detection_state_ == DETECTION_MOVING ? "有人移动" : "有人静止";
-      ESP_LOGI(TAG, "状态: %s, 距离: %d cm", state_str, distance_);
-      last_log_ms = now;
+    if (len >= 13) {  // 确保有足够的长度
+      memcpy(&gate_energy, &buffer[9], 2);  // 第一个距离门的能量值
+      
+      // 存储到历史缓冲区
+      energy_history_.push_back(static_cast<float>(gate_energy));
+      
+      // 保持缓冲区大小
+      if (energy_history_.size() > HEART_RATE_SAMPLES * 2) {
+        energy_history_.pop_front();
+      }
+      
+      // 发布原始心率值（用于调试）
+      if (heart_rate_raw_sensor_) {
+        heart_rate_raw_sensor_->publish_state(gate_energy);
+      }
     }
   } else {
-    // 无人状态，重置追踪
-    consecutive_person_frames_ = 0;
-    tracking_person_ = false;
-    
-    // 清空心率数据
-    if (heart_rate_sensor_) {
-      heart_rate_sensor_->publish_state(NAN);
-    }
-    if (breath_rate_sensor_) {
-      breath_rate_sensor_->publish_state(NAN);
-    }
-  }
-}
-
-void LD2402WithHR::check_and_analyze_vital_signs(uint16_t gate_energy) {
-  // 只在静止状态下进行心率检测（移动时心率检测不可靠）
-  if (detection_state_ != DETECTION_STILL) {
-    return;
+    // 无人时清空历史数据
+    energy_history_.clear();
   }
   
-  // 距离太远或太近都不适合检测
-  if (distance_ < 50 || distance_ > 400) {  // 0.5米 - 4米
-    return;
-  }
-  
-  // 收集能量值到历史缓冲区
-  if (history_index_ < SIGNAL_BUFFER_SIZE) {
-    energy_history_[history_index_++] = static_cast<float>(gate_energy);
-  } else {
-    // 缓冲区已满，循环使用
-    std::rotate(energy_history_.begin(), energy_history_.begin() + 1, energy_history_.end());
-    energy_history_[SIGNAL_BUFFER_SIZE - 1] = static_cast<float>(gate_energy);
-  }
-  
-  // 定期分析
+  // 调试日志
+  static uint32_t last_log_ms = 0;
   uint32_t now = millis();
-  if (now - last_analysis_time_ > HR_ANALYSIS_INTERVAL_MS) {
-    last_analysis_time_ = now;
+  if (now - last_log_ms > 2000) {
+    const char* state_str = "未知";
+    if (detection_state_ == 0x00) state_str = "无人";
+    else if (detection_state_ == 0x01) state_str = "有人移动";
+    else if (detection_state_ == 0x02) state_str = "有人静止";
     
-    // 确保有足够的数据
-    if (history_index_ >= SIGNAL_BUFFER_SIZE / 2) {
-      analyze_vital_signs();
-    }
+    ESP_LOGD(TAG, "状态: %s, 距离: %d cm, 能量历史: %d", 
+             state_str, distance_, energy_history_.size());
+    last_log_ms = now;
   }
 }
 
-void LD2402WithHR::analyze_vital_signs() {
-  // 检查是否有人且静止
-  if (detection_state_ != DETECTION_STILL || !tracking_person_) {
+void LD2402Minimal::analyze_vital_signs() {
+  // 检查是否有足够的数据
+  if (energy_history_.size() < HEART_RATE_SAMPLES || detection_state_ == 0x00) {
+    if (heart_rate_sensor_ && current_heart_rate_ > 0) {
+      heart_rate_sensor_->publish_state(0.0f);
+      current_heart_rate_ = 0.0f;
+    }
+    if (breath_rate_sensor_ && current_breath_rate_ > 0) {
+      breath_rate_sensor_->publish_state(0.0f);
+      current_breath_rate_ = 0.0f;
+    }
     return;
   }
-  
-  // 预处理信号
-  float signal[SIGNAL_BUFFER_SIZE];
-  float sum = 0;
-  
-  // 复制并去直流
-  for (uint16_t i = 0; i < SIGNAL_BUFFER_SIZE; i++) {
-    signal[i] = energy_history_[i];
-    sum += signal[i];
-  }
-  float mean = sum / SIGNAL_BUFFER_SIZE;
-  
-  for (uint16_t i = 0; i < SIGNAL_BUFFER_SIZE; i++) {
-    signal[i] -= mean;
-  }
-  
-  // 应用窗函数
-  apply_hanning_window(signal, SIGNAL_BUFFER_SIZE);
   
   // 计算心率和呼吸率
   float heart_rate = calculate_heart_rate();
   float breath_rate = calculate_breath_rate();
   
-  // 发布传感器数据
+  // 更新传感器值
   if (heart_rate_sensor_ && heart_rate > 0) {
     heart_rate_sensor_->publish_state(heart_rate);
+    current_heart_rate_ = heart_rate;
   }
   
   if (breath_rate_sensor_ && breath_rate > 0) {
     breath_rate_sensor_->publish_state(breath_rate);
+    current_breath_rate_ = breath_rate;
   }
   
-  ESP_LOGD(TAG, "心率分析完成: HR=%.1f BPM, BR=%.1f BPM", heart_rate, breath_rate);
+  ESP_LOGD(TAG, "生命体征分析: 心率=%.1f BPM, 呼吸率=%.1f BPM", 
+           heart_rate, breath_rate);
 }
 
-void LD2402WithHR::apply_hanning_window(float *signal, uint16_t length) {
-  for (uint16_t i = 0; i < length; i++) {
-    float window = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (length - 1)));
-    signal[i] *= window;
-  }
-}
-
-float LD2402WithHR::goertzel_algorithm(const float *signal, uint16_t length, float target_freq, float sampling_rate) {
-  // Goertzel算法：计算特定频率的信号强度
-  float omega = 2.0f * M_PI * target_freq / sampling_rate;
-  float coeff = 2.0f * cosf(omega);
-  
-  float s_prev = 0.0f;
-  float s_prev2 = 0.0f;
-  
-  for (uint16_t i = 0; i < length; i++) {
-    float s = signal[i] + coeff * s_prev - s_prev2;
-    s_prev2 = s_prev;
-    s_prev = s;
-  }
-  
-  float real = s_prev - s_prev2 * cosf(omega);
-  float imag = s_prev2 * sinf(omega);
-  
-  return sqrtf(real * real + imag * imag);
-}
-
-float LD2402WithHR::calculate_heart_rate() {
-  // 使用前一半数据（较新）进行分析
-  uint16_t effective_length = std::min(history_index_, SIGNAL_BUFFER_SIZE);
-  if (effective_length < 32) {
-    return 0.0f;  // 数据不足
-  }
-  
-  // 心率频率范围：0.8-3.0 Hz (48-180 BPM)
-  const float hr_min_freq = 0.8f;  // 48 BPM
-  const float hr_max_freq = 3.0f;  // 180 BPM
-  const float hr_step = 0.1f;      // 分辨率
-  
-  float max_magnitude = 0.0f;
-  float best_freq = 0.0f;
-  
-  // 复制信号
-  std::vector<float> signal(effective_length);
-  float sum = 0;
-  for (uint16_t i = 0; i < effective_length; i++) {
-    signal[i] = energy_history_[i];
-    sum += signal[i];
-  }
-  float mean = sum / effective_length;
-  
-  // 去直流
-  for (uint16_t i = 0; i < effective_length; i++) {
-    signal[i] -= mean;
-  }
-  
-  // 搜索最佳频率
-  for (float freq = hr_min_freq; freq <= hr_max_freq; freq += hr_step) {
-    float magnitude = goertzel_algorithm(signal.data(), effective_length, freq, SAMPLING_RATE);
-    
-    if (magnitude > max_magnitude) {
-      max_magnitude = magnitude;
-      best_freq = freq;
-    }
-  }
-  
-  // 转换为BPM
-  float heart_rate_bpm = best_freq * 60.0f;
-  
-  // 有效性检查
-  if (heart_rate_bpm >= 40.0f && heart_rate_bpm <= 180.0f && max_magnitude > 100.0f) {
-    return heart_rate_bpm;
-  }
-  
-  return 0.0f;
-}
-
-float LD2402WithHR::calculate_breath_rate() {
-  // 呼吸率检测（类似心率）
-  uint16_t effective_length = std::min(history_index_, SIGNAL_BUFFER_SIZE);
-  if (effective_length < 32) {
+float LD2402Minimal::calculate_heart_rate() {
+  if (energy_history_.size() < HEART_RATE_SAMPLES) {
     return 0.0f;
   }
   
-  // 呼吸频率范围：0.1-0.5 Hz (6-30 BPM)
-  const float br_min_freq = 0.1f;  // 6 BPM
-  const float br_max_freq = 0.5f;  // 30 BPM
-  const float br_step = 0.05f;     // 分辨率
+  // 提取最近的样本
+  std::vector<float> signal(HEART_RATE_SAMPLES);
+  auto it = energy_history_.end();
+  std::advance(it, -HEART_RATE_SAMPLES);
   
-  float max_magnitude = 0.0f;
-  float best_freq = 0.0f;
-  
-  // 复制并预处理信号
-  std::vector<float> signal(effective_length);
-  float sum = 0;
-  for (uint16_t i = 0; i < effective_length; i++) {
-    signal[i] = energy_history_[i];
-    sum += signal[i];
-  }
-  float mean = sum / effective_length;
-  
-  // 去直流
-  for (uint16_t i = 0; i < effective_length; i++) {
-    signal[i] -= mean;
+  for (size_t i = 0; i < HEART_RATE_SAMPLES && it != energy_history_.end(); ++i, ++it) {
+    signal[i] = *it;
   }
   
-  // 搜索最佳频率
-  for (float freq = br_min_freq; freq <= br_max_freq; freq += br_step) {
-    float magnitude = goertzel_algorithm(signal.data(), effective_length, freq, SAMPLING_RATE);
+  // 移除直流分量
+  float sum = 0.0f;
+  for (float sample : signal) {
+    sum += sample;
+  }
+  float mean = sum / signal.size();
+  
+  for (float &sample : signal) {
+    sample -= mean;
+  }
+  
+  // 应用带通滤波器（心率频率：0.8-3.0 Hz，对应48-180 BPM）
+  apply_bandpass_filter(signal.data(), signal.size(), 0.8f, 3.0f);
+  
+  // 寻找峰值频率
+  float peak_freq = find_peak_frequency(signal.data(), signal.size(), 0.8f, 3.0f);
+  
+  if (peak_freq > 0) {
+    float heart_rate_bpm = peak_freq * 60.0f;  // 转换为BPM
     
-    if (magnitude > max_magnitude) {
-      max_magnitude = magnitude;
-      best_freq = freq;
+    // 有效性检查
+    if (heart_rate_bpm >= 40.0f && heart_rate_bpm <= 180.0f) {
+      return heart_rate_bpm;
     }
-  }
-  
-  // 转换为BPM
-  float breath_rate_bpm = best_freq * 60.0f;
-  
-  // 有效性检查
-  if (breath_rate_bpm >= 6.0f && breath_rate_bpm <= 30.0f && max_magnitude > 50.0f) {
-    return breath_rate_bpm;
   }
   
   return 0.0f;
 }
 
-}  // namespace esphome::ld2402_with_hr
+float LD2402Minimal::calculate_breath_rate() {
+  if (energy_history_.size() < HEART_RATE_SAMPLES) {
+    return 0.0f;
+  }
+  
+  // 提取最近的样本
+  std::vector<float> signal(HEART_RATE_SAMPLES);
+  auto it = energy_history_.end();
+  std::advance(it, -HEART_RATE_SAMPLES);
+  
+  for (size_t i = 0; i < HEART_RATE_SAMPLES && it != energy_history_.end(); ++i, ++it) {
+    signal[i] = *it;
+  }
+  
+  // 移除直流分量
+  float sum = 0.0f;
+  for (float sample : signal) {
+    sum += sample;
+  }
+  float mean = sum / signal.size();
+  
+  for (float &sample : signal) {
+    sample -= mean;
+  }
+  
+  // 应用带通滤波器（呼吸频率：0.1-0.5 Hz，对应6-30 BPM）
+  apply_bandpass_filter(signal.data(), signal.size(), 0.1f, 0.5f);
+  
+  // 寻找峰值频率
+  float peak_freq = find_peak_frequency(signal.data(), signal.size(), 0.1f, 0.5f);
+  
+  if (peak_freq > 0) {
+    float breath_rate_bpm = peak_freq * 60.0f;  // 转换为BPM
+    
+    // 有效性检查
+    if (breath_rate_bpm >= 4.0f && breath_rate_bpm <= 40.0f) {
+      return breath_rate_bpm;
+    }
+  }
+  
+  return 0.0f;
+}
+
+void LD2402Minimal::apply_bandpass_filter(float *data, uint16_t len, float low_freq, float high_freq) {
+  // 简单的IIR带通滤波器实现
+  // 注意：这是一个简化版本，实际应用可能需要更复杂的滤波器
+  
+  if (len < 2) return;
+  
+  // 计算滤波器系数
+  float dt = 1.0f / SAMPLING_RATE;
+  float rc_low = 1.0f / (2.0f * M_PI * high_freq);
+  float rc_high = 1.0f / (2.0f * M_PI * low_freq);
+  float alpha_low = dt / (rc_low + dt);
+  float alpha_high = rc_high / (rc_high + dt);
+  
+  // 应用滤波器
+  float prev_low = data[0];
+  float prev_high = data[0];
+  
+  for (uint16_t i = 1; i < len; i++) {
+    // 低通部分
+    float lowpass = prev_low + alpha_low * (data[i] - prev_low);
+    
+    // 高通部分
+    float highpass = alpha_high * (prev_high + data[i] - data[i-1]);
+    
+    // 带通 = 高通 + 低通
+    data[i] = highpass + (lowpass - prev_low);
+    
+    prev_low = lowpass;
+    prev_high = highpass;
+  }
+}
+
+float LD2402Minimal::find_peak_frequency(const float *data, uint16_t len, float min_freq, float max_freq) {
+  // 简单峰值检测算法（零交叉法）
+  // 注意：这是一个简化版本，对于复杂信号可能需要FFT
+  
+  if (len < 4) return 0.0f;
+  
+  // 寻找过零点
+  int zero_crossings = 0;
+  for (uint16_t i = 1; i < len; i++) {
+    if (data[i-1] * data[i] < 0) {  // 符号变化
+      zero_crossings++;
+    }
+  }
+  
+  if (zero_crossings < 2) {
+    return 0.0f;  // 没有足够的周期
+  }
+  
+  // 计算平均周期长度
+  float avg_period_samples = static_cast<float>(len) / (static_cast<float>(zero_crossings) / 2.0f);
+  float frequency_hz = SAMPLING_RATE / avg_period_samples;
+  
+  // 检查频率是否在有效范围内
+  if (frequency_hz >= min_freq && frequency_hz <= max_freq) {
+    return frequency_hz;
+  }
+  
+  return 0.0f;
+}
+
+}  // namespace esphome::ld2402_minimal
