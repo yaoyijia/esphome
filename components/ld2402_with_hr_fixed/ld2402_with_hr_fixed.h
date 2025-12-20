@@ -10,6 +10,9 @@ namespace esphome::ld2402_with_hr {
 
 class LD2402WithHR : public Component, public uart::UARTDevice {
  public:
+  // 构造函数声明
+  LD2402WithHR();
+  
   // 传感器设置
   void set_distance_sensor(sensor::Sensor *sensor) { distance_sensor_ = sensor; }
   void set_state_sensor(sensor::Sensor *sensor) { state_sensor_ = sensor; }
