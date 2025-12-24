@@ -8,6 +8,17 @@ namespace gps_ntp_server {
 
 GPSNTPServer *GPSNTPServer::instance_ = nullptr;
 
+// ==================== 安全的临界区保护 ====================
+void GPSNTPServer::enter_critical() {
+  // 保存中断状态并禁用中断
+  noInterrupts();
+}
+
+void GPSNTPServer::exit_critical() {
+  // 恢复中断状态
+  interrupts();
+}
+
 // ==================== PPS中断处理 ====================
 void IRAM_ATTR GPSNTPServer::pps_interrupt_handler() {
   if (GPSNTPServer::instance_) {
@@ -26,8 +37,8 @@ void IRAM_ATTR GPSNTPServer::pps_interrupt_handler() {
     }
     last_interrupt_time = now;
     
-    // 进入临界区
-    portENTER_CRITICAL_ISR(&GPSNTPServer::instance_->time_mutex_);
+    // 禁用中断以保证操作的原子性
+    noInterrupts();
     
     // 记录PPS时间
     GPSNTPServer::instance_->pps_last_edge_us_ = now;
@@ -39,8 +50,8 @@ void IRAM_ATTR GPSNTPServer::pps_interrupt_handler() {
     // 记录此时的微秒计数器值
     GPSNTPServer::instance_->last_pps_micros_ = now;
     
-    // 离开临界区
-    portEXIT_CRITICAL_ISR(&GPSNTPServer::instance_->time_mutex_);
+    // 恢复中断
+    interrupts();
     
     GPSNTPServer::instance_->pps_triggered_ = true;
   }
@@ -48,27 +59,36 @@ void IRAM_ATTR GPSNTPServer::pps_interrupt_handler() {
 
 // ==================== 获取精确时间（基于PPS和微秒计数器） ====================
 uint64_t GPSNTPServer::get_precise_time_us() {
-  portENTER_CRITICAL(&time_mutex_);
+  // 禁用中断以保证读取的原子性
+  noInterrupts();
   
   // 如果没有PPS信号，回退到系统时间
   if (!pps_active_ || pps_count_ < 3) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     uint64_t result = (uint64_t)tv.tv_sec * 1000000ULL + tv.tv_usec;
-    portEXIT_CRITICAL(&time_mutex_);
+    interrupts();
     return result;
   }
+  
+  // 保存当前值到局部变量
+  uint64_t base_seconds = pps_base_seconds_;
+  uint32_t last_micros = last_pps_micros_;
+  uint32_t pps_count = pps_count_;
+  
+  // 恢复中断
+  interrupts();
   
   // 获取当前微秒计数器值（应用校准因子）
   uint32_t current_micros = (uint32_t)(micros() * micros_calibration_factor_);
   
   // 计算自上次PPS以来的微秒数
   uint32_t elapsed_micros;
-  if (current_micros >= last_pps_micros_) {
-    elapsed_micros = current_micros - last_pps_micros_;
+  if (current_micros >= last_micros) {
+    elapsed_micros = current_micros - last_micros;
   } else {
     // 处理微秒计数器溢出
-    elapsed_micros = (0xFFFFFFFFUL - last_pps_micros_) + current_micros + 1;
+    elapsed_micros = (0xFFFFFFFFUL - last_micros) + current_micros + 1;
   }
   
   // 限制在1秒内（理论上不应该超过）
@@ -77,9 +97,8 @@ uint64_t GPSNTPServer::get_precise_time_us() {
   }
   
   // 计算总时间：PPS秒数 + 微秒部分
-  uint64_t result = pps_base_seconds_ * 1000000ULL + elapsed_micros;
+  uint64_t result = base_seconds * 1000000ULL + elapsed_micros;
   
-  portEXIT_CRITICAL(&time_mutex_);
   return result;
 }
 
@@ -90,10 +109,15 @@ void GPSNTPServer::calibrate_microsecond_counter() {
   static uint32_t last_calibration_pps = 0;
   static uint32_t last_calibration_micros = 0;
   
-  portENTER_CRITICAL(&time_mutex_);
+  // 保存当前值到局部变量
+  uint32_t current_pps;
+  uint32_t current_micros;
   
-  uint32_t current_pps = pps_count_;
-  uint32_t current_micros = micros();
+  // 禁用中断以保证读取的原子性
+  noInterrupts();
+  current_pps = pps_count_;
+  current_micros = micros();
+  interrupts();
   
   // 计算自上次校准以来的PPS数和微秒数
   if (last_calibration_pps > 0) {
@@ -128,8 +152,6 @@ void GPSNTPServer::calibrate_microsecond_counter() {
   
   last_calibration_pps = current_pps;
   last_calibration_micros = current_micros;
-  
-  portEXIT_CRITICAL(&time_mutex_);
 }
 
 // ==================== 更新系统时间（基于PPS虚拟RTC） ====================
