@@ -31,8 +31,6 @@ class GPSNTPServer : public Component {
   void handle_ntp_request();
   void handle_pps();
   void discipline_time();
-  float calculate_average_pps_phase();
-  uint32_t calculate_pps_interval(uint32_t current_time, uint32_t previous_time);
   
   // PPS相关
   uint8_t pps_pin_ = 0;
@@ -41,12 +39,6 @@ class GPSNTPServer : public Component {
   volatile bool pps_triggered_ = false;
   bool pps_active_ = false;
   uint32_t pps_last_stable_ = 0;
-  
-  // PPS时间戳环形缓冲区（用于20次平均）
-  static const uint8_t PPS_BUFFER_SIZE = 20;
-  volatile uint32_t pps_timestamps_[PPS_BUFFER_SIZE];
-  volatile uint8_t pps_buffer_index_ = 0;
-  volatile bool pps_buffer_filled_ = false;
   
   // NTP服务器
   WiFiUDP udp_;
