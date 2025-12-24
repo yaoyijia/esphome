@@ -19,8 +19,9 @@ class GPSNTPServer : public Component {
   bool is_pps_active() const { return pps_active_; }
   uint32_t get_pps_count() const { return pps_count_; }
   uint32_t get_ntp_requests() const { return ntp_requests_; }
-  float get_time_error() const { return time_discipline_.error_ms; }
+  float get_time_error() const { return time_discipline_.error_us / 1000.0f; }
   bool is_disciplining() const { return time_discipline_.disciplining; }
+  float get_frequency_error() const { return frequency_error_ppm_; }
   
  protected:
   static void IRAM_ATTR pps_interrupt_handler();
@@ -31,6 +32,9 @@ class GPSNTPServer : public Component {
   void handle_ntp_request();
   void handle_pps();
   void discipline_time();
+  void update_system_time();
+  void calibrate_microsecond_counter();
+  uint64_t get_precise_time_us();
   
   // PPS相关
   uint8_t pps_pin_ = 0;
@@ -39,6 +43,17 @@ class GPSNTPServer : public Component {
   volatile bool pps_triggered_ = false;
   bool pps_active_ = false;
   uint32_t pps_last_stable_ = 0;
+  
+  // 时间基准（基于PPS计数）
+  volatile uint64_t pps_base_seconds_ = 0;  // PPS脉冲计数的秒部分
+  volatile uint32_t last_pps_micros_ = 0;   // 最后一次PPS时的微秒计数器值
+  volatile uint32_t last_sync_us_ = 0;      // 最后一次同步时的微秒时间
+  
+  // 微秒计数器校准
+  float micros_calibration_factor_ = 1.0f;  // 微秒计数器校准因子
+  float frequency_error_ppm_ = 0.0f;        // 频率误差（ppm）
+  uint32_t last_calibration_us_ = 0;
+  uint32_t calibration_interval_us_ = 10000000;  // 10秒校准一次
   
   // NTP服务器
   WiFiUDP udp_;
@@ -49,7 +64,7 @@ class GPSNTPServer : public Component {
   
   // 时间驯服相关
   struct {
-    float error_ms = 0.0f;           // 当前时间误差（毫秒）
+    float error_us = 0.0f;           // 当前时间误差（微秒）
     float last_error = 0.0f;         // 上次误差
     uint32_t last_discipline = 0;    // 上次驯服时间
     bool disciplining = false;       // 是否正在驯服
@@ -62,6 +77,9 @@ class GPSNTPServer : public Component {
   
   // 实例指针
   static GPSNTPServer *instance_;
+  
+  // 互斥锁（用于时间相关操作的线程安全）
+  portMUX_TYPE time_mutex_ = portMUX_INITIALIZER_UNLOCKED;
 };
 
 }  // namespace gps_ntp_server
