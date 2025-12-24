@@ -36,6 +36,10 @@ class GPSNTPServer : public Component {
   void calibrate_microsecond_counter();
   uint64_t get_precise_time_us();
   
+  // 安全的临界区保护函数
+  void enter_critical();
+  void exit_critical();
+  
   // PPS相关
   uint8_t pps_pin_ = 0;
   volatile uint32_t pps_last_edge_us_ = 0;
@@ -78,8 +82,8 @@ class GPSNTPServer : public Component {
   // 实例指针
   static GPSNTPServer *instance_;
   
-  // 互斥锁（用于时间相关操作的线程安全）
-  portMUX_TYPE time_mutex_ = portMUX_INITIALIZER_UNLOCKED;
+  // 临界区状态
+  volatile bool in_critical_ = false;
 };
 
 }  // namespace gps_ntp_server
