@@ -8,17 +8,6 @@ namespace gps_ntp_server {
 
 GPSNTPServer *GPSNTPServer::instance_ = nullptr;
 
-// ==================== 安全的临界区保护 ====================
-void GPSNTPServer::enter_critical() {
-  // 保存中断状态并禁用中断
-  noInterrupts();
-}
-
-void GPSNTPServer::exit_critical() {
-  // 恢复中断状态
-  interrupts();
-}
-
 // ==================== PPS中断处理 ====================
 void IRAM_ATTR GPSNTPServer::pps_interrupt_handler() {
   if (GPSNTPServer::instance_) {
@@ -37,195 +26,201 @@ void IRAM_ATTR GPSNTPServer::pps_interrupt_handler() {
     }
     last_interrupt_time = now;
     
-    // 禁用中断以保证操作的原子性
-    noInterrupts();
-    
-    // 记录PPS时间
     GPSNTPServer::instance_->pps_last_edge_us_ = now;
+    
+    // 将时间戳存入环形缓冲区
+    uint8_t index = GPSNTPServer::instance_->pps_buffer_index_;
+    GPSNTPServer::instance_->pps_timestamps_[index] = now;
+    GPSNTPServer::instance_->pps_buffer_index_ = (index + 1) % PPS_BUFFER_SIZE;
+    
+    // 标记缓冲区已填充满一次
+    if (index == PPS_BUFFER_SIZE - 1) {
+      GPSNTPServer::instance_->pps_buffer_filled_ = true;
+    }
+    
     GPSNTPServer::instance_->pps_count_++;
-    
-    // PPS作为1Hz时钟源：每个脉冲增加1秒
-    GPSNTPServer::instance_->pps_base_seconds_++;
-    
-    // 记录此时的微秒计数器值
-    GPSNTPServer::instance_->last_pps_micros_ = now;
-    
-    // 恢复中断
-    interrupts();
-    
     GPSNTPServer::instance_->pps_triggered_ = true;
   }
 }
 
-// ==================== 获取精确时间（基于PPS和微秒计数器） ====================
-uint64_t GPSNTPServer::get_precise_time_us() {
-  // 禁用中断以保证读取的原子性
-  noInterrupts();
-  
-  // 如果没有PPS信号，回退到系统时间
-  if (!pps_active_ || pps_count_ < 3) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    uint64_t result = (uint64_t)tv.tv_sec * 1000000ULL + tv.tv_usec;
-    interrupts();
-    return result;
+// ==================== 计算PPS时间戳平均值 ====================
+float GPSNTPServer::calculate_average_pps_phase() {
+  if (pps_count_ < 3) {  // 至少需要3个样本才开始计算
+    return 0.0f;
   }
   
-  // 保存当前值到局部变量
-  uint64_t base_seconds = pps_base_seconds_;
-  uint32_t last_micros = last_pps_micros_;
-  uint32_t pps_count = pps_count_;
+  // 计算缓冲区中有效样本的数量
+  uint8_t samples = pps_buffer_filled_ ? PPS_BUFFER_SIZE : pps_buffer_index_;
+  if (samples < 3) {
+    return 0.0f;
+  }
   
-  // 恢复中断
-  interrupts();
+  // 计算平均相位（微秒部分）
+  uint64_t sum_us = 0;
   
-  // 获取当前微秒计数器值（应用校准因子）
-  uint32_t current_micros = (uint32_t)(micros() * micros_calibration_factor_);
+  // 使用最近的有效样本（最多PPS_BUFFER_SIZE个）
+  uint8_t start_index = (pps_buffer_index_ + PPS_BUFFER_SIZE - samples) % PPS_BUFFER_SIZE;
   
-  // 计算自上次PPS以来的微秒数
-  uint32_t elapsed_micros;
-  if (current_micros >= last_micros) {
-    elapsed_micros = current_micros - last_micros;
+  for (uint8_t i = 0; i < samples; i++) {
+    uint8_t idx = (start_index + i) % PPS_BUFFER_SIZE;
+    uint32_t us_part = pps_timestamps_[idx] % 1000000;  // 取微秒部分
+    sum_us += us_part;
+  }
+  
+  return (float)(sum_us / samples) / 1000.0f;  // 转换为毫秒
+}
+
+// ==================== 计算PPS间隔时间 ====================
+uint32_t GPSNTPServer::calculate_pps_interval(uint32_t current_time, uint32_t previous_time) {
+  if (current_time >= previous_time) {
+    return current_time - previous_time;
   } else {
     // 处理微秒计数器溢出
-    elapsed_micros = (0xFFFFFFFFUL - last_micros) + current_micros + 1;
-  }
-  
-  // 限制在1秒内（理论上不应该超过）
-  if (elapsed_micros >= 1000000) {
-    elapsed_micros = 999999;
-  }
-  
-  // 计算总时间：PPS秒数 + 微秒部分
-  uint64_t result = base_seconds * 1000000ULL + elapsed_micros;
-  
-  return result;
-}
-
-// ==================== 校准微秒计数器 ====================
-void GPSNTPServer::calibrate_microsecond_counter() {
-  if (pps_count_ < 10) return;  // 需要足够的PPS样本
-  
-  static uint32_t last_calibration_pps = 0;
-  static uint32_t last_calibration_micros = 0;
-  
-  // 保存当前值到局部变量
-  uint32_t current_pps;
-  uint32_t current_micros;
-  
-  // 禁用中断以保证读取的原子性
-  noInterrupts();
-  current_pps = pps_count_;
-  current_micros = micros();
-  interrupts();
-  
-  // 计算自上次校准以来的PPS数和微秒数
-  if (last_calibration_pps > 0) {
-    uint32_t pps_elapsed = current_pps - last_calibration_pps;
-    uint32_t micros_elapsed;
-    
-    if (current_micros >= last_calibration_micros) {
-      micros_elapsed = current_micros - last_calibration_micros;
-    } else {
-      micros_elapsed = (0xFFFFFFFFUL - last_calibration_micros) + current_micros + 1;
-    }
-    
-    // 理想情况下，每个PPS间隔应该是1,000,000微秒
-    if (pps_elapsed >= 10) {  // 至少10个PPS间隔
-      float expected_micros = pps_elapsed * 1000000.0f;
-      float actual_micros = (float)micros_elapsed;
-      
-      // 计算频率误差（ppm）
-      frequency_error_ppm_ = ((actual_micros - expected_micros) / expected_micros) * 1000000.0f;
-      
-      // 更新校准因子
-      micros_calibration_factor_ = expected_micros / actual_micros;
-      
-      // 限制校准因子在合理范围内（±1000ppm）
-      if (micros_calibration_factor_ > 1.001f) micros_calibration_factor_ = 1.001f;
-      if (micros_calibration_factor_ < 0.999f) micros_calibration_factor_ = 0.999f;
-      
-      ESP_LOGD("gps_ntp", "微秒计数器校准: 误差=%.1fppm, 校准因子=%.6f", 
-               frequency_error_ppm_, micros_calibration_factor_);
-    }
-  }
-  
-  last_calibration_pps = current_pps;
-  last_calibration_micros = current_micros;
-}
-
-// ==================== 更新系统时间（基于PPS虚拟RTC） ====================
-void GPSNTPServer::update_system_time() {
-  if (!pps_active_ || pps_count_ < 3) return;
-  
-  // 获取基于PPS的精确时间
-  uint64_t precise_time_us = get_precise_time_us();
-  
-  // 转换为秒和微秒
-  uint64_t seconds = precise_time_us / 1000000ULL;
-  uint64_t microseconds = precise_time_us % 1000000ULL;
-  
-  // 设置系统时间
-  struct timeval tv;
-  tv.tv_sec = seconds;
-  tv.tv_usec = microseconds;
-  
-  if (settimeofday(&tv, NULL) == 0) {
-    // 记录最后一次同步时间
-    last_sync_us_ = microseconds;
-    
-    // 仅在误差较大时记录日志
-    static uint64_t last_log_seconds = 0;
-    if (seconds - last_log_seconds >= 60) {  // 每分钟记录一次
-      last_log_seconds = seconds;
-      
-      struct tm *tm_info = gmtime(&tv.tv_sec);
-      ESP_LOGD("gps_ntp", "PPS时间同步: %02d:%02d:%02d.%06u UTC",
-               tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
-               (uint32_t)microseconds);
-    }
+    return (0xFFFFFFFFUL - previous_time) + current_time + 1;
   }
 }
 
-// ==================== 时间驯服函数（现在更简单了） ====================
+// ==================== 时间驯服函数 ====================
 void GPSNTPServer::discipline_time() {
-  if (!pps_active_) return;
+  if (!pps_active_ || !pps_buffer_filled_) return;
   
-  // 不再需要复杂的调整逻辑，直接基于PPS更新时间
-  update_system_time();
+  // 计算20次PPS的平均相位
+  float avg_phase_ms = calculate_average_pps_phase();
+  if (avg_phase_ms == 0.0f) return;
   
-  // 定期校准微秒计数器
-  uint32_t now = micros();
-  if (now - last_calibration_us_ > calibration_interval_us_) {
-    last_calibration_us_ = now;
-    calibrate_microsecond_counter();
+  // 将误差归一化到-500ms到+500ms范围
+  float error_ms = avg_phase_ms;
+  if (error_ms > 500.0f) {
+    error_ms = error_ms - 1000.0f;
   }
   
-  // 更新状态（计算当前误差）
-  uint64_t precise_time_us = get_precise_time_us();
+  // 保存误差用于状态显示
+  time_discipline_.last_error = time_discipline_.error_ms;
+  time_discipline_.error_ms = error_ms;
+  time_discipline_.discipline_count++;
   
-  // 计算误差（微秒）
-  time_discipline_.error_us = (float)(precise_time_us % 1000000ULL);
-  if (time_discipline_.error_us > 500000.0f) {
-    time_discipline_.error_us -= 1000000.0f;
+  // 根据误差大小进行分层调整（去掉了5ms的阈值限制）
+  float adjustment = 0.0f;
+  float abs_error = fabs(error_ms);
+  
+  // 非常精细的调整策略
+  if (abs_error > 100.0f) {
+    // 大误差：中等调整（40%）
+    adjustment = -error_ms * 0.4f;
+    ESP_LOGD("gps_ntp", "大误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
+  } else if (abs_error > 50.0f) {
+    // 中误差：中等调整（30%）
+    adjustment = -error_ms * 0.3f;
+    ESP_LOGD("gps_ntp", "中误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
+  } else if (abs_error > 20.0f) {
+    // 小误差：慢速调整（20%）
+    adjustment = -error_ms * 0.2f;
+    ESP_LOGD("gps_ntp", "小误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
+  } else if (abs_error > 10.0f) {
+    // 微小误差：极慢调整（10%）
+    adjustment = -error_ms * 0.1f;
+    ESP_LOGD("gps_ntp", "微误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
+  } else if (abs_error > 5.0f) {
+    // 极微误差：非常慢调整（5%）
+    adjustment = -error_ms * 0.05f;
+    ESP_LOGD("gps_ntp", "极微误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
+  } else if (abs_error > 2.0f) {
+    // 超微误差：极慢调整（3%）
+    adjustment = -error_ms * 0.03f;
+    ESP_LOGD("gps_ntp", "超微误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
+  } else if (abs_error > 0.5f) {
+    // 亚毫秒误差：非常缓慢调整（1%）
+    adjustment = -error_ms * 0.01f;
+    ESP_LOGD("gps_ntp", "亚毫秒调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
+  } else {
+    // 误差小于0.5ms：不调整，但记录稳定状态
+    time_discipline_.disciplining = false;
+    time_discipline_.skip_count++;
+    
+    // 每120次跳过记录一次（因为可能非常频繁）
+    if (time_discipline_.skip_count % 120 == 0) {
+      ESP_LOGD("gps_ntp", "时间稳定: 平均误差=%.3fms < 0.5ms, 跳过调整 #%u", 
+               error_ms, time_discipline_.skip_count);
+    }
+    return;
+  }
+  
+  // 限制调整幅度（根据误差大小动态调整上限）
+  float max_adjustment = 30.0f;
+  if (abs_error < 10.0f) max_adjustment = 10.0f;
+  if (abs_error < 5.0f) max_adjustment = 5.0f;
+  if (abs_error < 2.0f) max_adjustment = 2.0f;
+  if (abs_error < 1.0f) max_adjustment = 1.0f;
+  
+  if (adjustment > max_adjustment) adjustment = max_adjustment;
+  if (adjustment < -max_adjustment) adjustment = -max_adjustment;
+  
+  // 如果调整量太小（小于0.1ms），跳过
+  if (fabs(adjustment) < 0.1f) {
+    time_discipline_.disciplining = false;
+    time_discipline_.skip_count++;
+    return;
   }
   
   time_discipline_.disciplining = true;
-  time_discipline_.discipline_count++;
+  
+  // 调整系统时间（微秒级调整）
+  int32_t adjust_us = (int32_t)(adjustment * 1000.0f);
+  
+  struct timeval new_tv;
+  gettimeofday(&new_tv, NULL);
+  
+  // 应用调整
+  new_tv.tv_usec += adjust_us;
+  
+  // 处理进位
+  if (new_tv.tv_usec >= 1000000) {
+    new_tv.tv_sec += new_tv.tv_usec / 1000000;
+    new_tv.tv_usec %= 1000000;
+  } else if (new_tv.tv_usec < 0) {
+    new_tv.tv_sec -= (-new_tv.tv_usec / 1000000) + 1;
+    new_tv.tv_usec = 1000000 + (new_tv.tv_usec % 1000000);
+  }
+  
+  // 设置新时间
+  if (settimeofday(&new_tv, NULL) == 0) {
+    // 记录调整信息
+    float avg_phase_for_log = avg_phase_ms;
+    if (avg_phase_for_log > 500.0f) avg_phase_for_log -= 1000.0f;
+    
+    // 根据调整量大小使用不同的日志级别
+    if (abs_error > 20.0f) {
+      ESP_LOGI("gps_ntp", "时间驯服 #%u: 平均相位=%.2fms, 误差=%.2fms, 调整=%.2fms", 
+               time_discipline_.discipline_count,
+               avg_phase_for_log,
+               error_ms, adjustment);
+    } else if (abs_error > 5.0f) {
+      ESP_LOGD("gps_ntp", "时间驯服 #%u: 平均相位=%.2fms, 误差=%.2fms, 调整=%.2fms", 
+               time_discipline_.discipline_count,
+               avg_phase_for_log,
+               error_ms, adjustment);
+    } else {
+      ESP_LOGV("gps_ntp", "精细驯服 #%u: 平均相位=%.3fms, 误差=%.3fms, 调整=%.3fms", 
+               time_discipline_.discipline_count,
+               avg_phase_for_log,
+               error_ms, adjustment);
+    }
+  } else {
+    ESP_LOGE("gps_ntp", "时间驯服失败");
+  }
 }
 
 // ==================== 发送NTP响应 ====================
 void GPSNTPServer::send_ntp_response(WiFiUDP &udp, IPAddress remote, int remotePort, 
                                     byte *clientTransmit) {
-  // 获取基于PPS的精确时间
-  uint64_t precise_time_us = get_precise_time_us();
-  uint64_t seconds = precise_time_us / 1000000ULL;
-  uint64_t microseconds = precise_time_us % 1000000ULL;
+  // 获取当前系统时间
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
   
   // 转换Unix时间为NTP时间
   const unsigned long seventyYears = 2208988800UL;
-  uint64_t ntp_seconds = seconds + seventyYears;
-  uint64_t ntp_fraction = microseconds * 4294967296ULL / 1000000ULL;
+  uint64_t ntp_seconds = (uint64_t)tv.tv_sec + seventyYears;
+  uint64_t ntp_fraction = (uint64_t)tv.tv_usec * 4294967296ULL / 1000000ULL;
   
   // 构建NTP响应包
   byte packetBuffer[48];
@@ -233,39 +228,36 @@ void GPSNTPServer::send_ntp_response(WiFiUDP &udp, IPAddress remote, int remoteP
   
   // NTP头部
   packetBuffer[0] = 0x24;  // LI=0, Version=4, Mode=4
-  packetBuffer[1] = pps_active_ ? 1 : 4;  // stratum: GPS+PPS=1, 无PPS=4
+  packetBuffer[1] = pps_active_ ? 2 : 4;  // stratum: PPS=2, 无PPS=4
   packetBuffer[2] = 6;     // Poll interval: 64秒
-  packetBuffer[3] = 0xEC;  // Precision: 2^-20 ≈ 0.95μs
+  packetBuffer[3] = 0xF6;  // Precision: 2^-10 ≈ 0.98ms
   
-  // Root Delay (0.0001秒 = 100μs)
-  uint32_t root_delay = 655;  // 0.0001 * 65536
+  // Root Delay (0.001秒)
+  uint32_t root_delay = 1 << 16;
   packetBuffer[4] = (root_delay >> 24) & 0xFF;
   packetBuffer[5] = (root_delay >> 16) & 0xFF;
   packetBuffer[6] = (root_delay >> 8) & 0xFF;
   packetBuffer[7] = root_delay & 0xFF;
   
-  // Root Dispersion (0.001秒 = 1ms)
-  uint32_t root_dispersion = 6554;  // 0.001 * 65536
+  // Root Dispersion (0.01秒)
+  uint32_t root_dispersion = 10 << 16;
   packetBuffer[8] = (root_dispersion >> 24) & 0xFF;
   packetBuffer[9] = (root_dispersion >> 16) & 0xFF;
   packetBuffer[10] = (root_dispersion >> 8) & 0xFF;
   packetBuffer[11] = root_dispersion & 0xFF;
   
-  // Reference Identifier (GPS+PPS)
+  // Reference Identifier
   packetBuffer[12] = 'G';
   packetBuffer[13] = 'P';
   packetBuffer[14] = 'S';
-  packetBuffer[15] = 'P';
+  packetBuffer[15] = pps_active_ ? 'P' : 'N';
   
-  // Reference Timestamp（使用第一个PPS时间）
+  // Reference Timestamp（使用系统启动时间）
   static uint64_t ref_ntp_seconds = 0;
-  if (ref_ntp_seconds == 0 && pps_active_) {
-    ref_ntp_seconds = seconds + seventyYears;
-  }
   if (ref_ntp_seconds == 0) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    ref_ntp_seconds = (uint64_t)tv.tv_sec + seventyYears;
+    struct timeval ref_tv;
+    gettimeofday(&ref_tv, NULL);
+    ref_ntp_seconds = (uint64_t)ref_tv.tv_sec + seventyYears;
   }
   uint32_t ref_seconds = (uint32_t)ref_ntp_seconds;
   uint32_t ref_fraction = 0;
@@ -309,7 +301,7 @@ void GPSNTPServer::send_ntp_response(WiFiUDP &udp, IPAddress remote, int remoteP
     ESP_LOGI("gps_ntp", "NTP响应 #%u: %s:%d, UTC=%02d:%02d:%02d.%06u",
              ntp_requests_, remote.toString().c_str(), remotePort,
              tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
-             (uint32_t)microseconds);
+             (uint32_t)((uint64_t)recv_fraction * 1000000ULL / 4294967296ULL));
   }
 }
 
@@ -339,25 +331,47 @@ void GPSNTPServer::handle_pps() {
     // 至少需要3个PPS信号才开始判断
     if (pps_count_ >= 3) {
       pps_active_ = true;
-      
-      // PPS发生时立即更新时间
-      discipline_time();
     }
     
     pps_last_stable_ = millis();
     
-    // 记录PPS间隔质量
+    // 只有当缓冲区填充满一次（20个样本）时才进行时间驯服
+    if (pps_buffer_filled_) {
+      discipline_time();
+    }
+    
+    // 记录PPS间隔（用于检测PPS质量）
     static uint32_t last_pps_time = 0;
     static uint32_t last_pps_count = 0;
     
     if (last_pps_count > 0) {
       uint32_t interval = millis() - last_pps_time;
+      float interval_sec = interval / 1000.0f;
+      
+      // 读取引脚电平状态
+      int pin_state = digitalRead(pps_pin_);
       
       // 检查间隔是否在合理范围内
-      if (interval < 900 || interval > 1100) {
+      if (interval > 900 && interval < 1100) {
+        // 正常
+        if (pps_count_ % 60 == 0) {
+          // 计算当前PPS相位
+          uint32_t current_us = micros();
+          uint32_t us_part = current_us % 1000000;
+          float phase_ms = us_part / 1000.0f;
+          if (phase_ms > 500.0f) phase_ms -= 1000.0f;
+          
+          ESP_LOGD("gps_ntp", "PPS正常 #%u, 间隔: %.3fs, 相位: %.3fms, 引脚电平: %d", 
+                   pps_count_, interval_sec, phase_ms, pin_state);
+        }
+      } else if (interval < 100) {
+        // 极短的间隔，可能是抖动或错误触发
+        ESP_LOGW("gps_ntp", "PPS间隔极短: %ums，可能是干扰", interval);
+      } else if (interval > 1500) {
+        // 间隔太长，可能丢失PPS
+        ESP_LOGW("gps_ntp", "PPS间隔过长: %ums", interval);
+      } else {
         ESP_LOGW("gps_ntp", "PPS间隔异常: %ums (预期1000ms)", interval);
-      } else if (pps_count_ % 60 == 0) {
-        ESP_LOGD("gps_ntp", "PPS正常 #%u, 间隔: %ums", pps_count_, interval);
       }
     }
     
@@ -368,35 +382,36 @@ void GPSNTPServer::handle_pps() {
   // 检查PPS是否丢失（3秒无更新）
   if (pps_active_ && (millis() - pps_last_stable_ > 3000)) {
     pps_active_ = false;
-    ESP_LOGW("gps_ntp", "PPS信号丢失，回退到系统RTC");
+    ESP_LOGW("gps_ntp", "PPS信号丢失");
   }
 }
 
 // ==================== 初始化 ====================
 void GPSNTPServer::setup() {
-  ESP_LOGI("gps_ntp", "初始化GPS NTP服务器 (PPS虚拟RTC模式)");
+  ESP_LOGI("gps_ntp", "初始化GPS NTP服务器");
   
   instance_ = this;
   
-  // 初始化时间变量
-  pps_base_seconds_ = 0;
-  last_pps_micros_ = 0;
-  micros_calibration_factor_ = 1.0f;
-  frequency_error_ppm_ = 0.0f;
+  // 初始化PPS时间戳缓冲区
+  for (int i = 0; i < PPS_BUFFER_SIZE; i++) {
+    pps_timestamps_[i] = 0;
+  }
+  pps_buffer_index_ = 0;
+  pps_buffer_filled_ = false;
   
   // 设置PPS引脚中断
   if (pps_pin_ > 0) {
     pinMode(pps_pin_, INPUT_PULLUP);
     
-    // 使用下降沿触发
+    // 使用下降沿触发（针对你的GPS模块PPS信号特性）
     attachInterrupt(digitalPinToInterrupt(pps_pin_), 
                    pps_interrupt_handler, 
                    FALLING);
     
     ESP_LOGI("gps_ntp", "PPS引脚: GPIO%d (下降沿触发)", pps_pin_);
-    ESP_LOGI("gps_ntp", "使用PPS作为虚拟1Hz RTC时钟源");
+    ESP_LOGI("gps_ntp", "将使用最近%d次PPS信号的平均值进行精细时间驯服", PPS_BUFFER_SIZE);
   } else {
-    ESP_LOGI("gps_ntp", "未配置PPS引脚，将使用系统RTC");
+    ESP_LOGI("gps_ntp", "未配置PPS引脚，将使用纯系统时间");
   }
   
   // 启动NTP服务器
@@ -418,73 +433,61 @@ void GPSNTPServer::loop() {
   // 处理NTP请求
   handle_ntp_request();
   
-  // 定期状态更新（10秒一次）
+  // 定期状态更新（30秒一次）
   static uint32_t last_status = 0;
-  if (now - last_status > 10000) {
+  if (now - last_status > 30000) {
     last_status = now;
     
-    // 获取基于PPS的精确时间
-    uint64_t precise_time_us = get_precise_time_us();
-    uint64_t seconds = precise_time_us / 1000000ULL;
-    uint64_t microseconds = precise_time_us % 1000000ULL;
-    time_t unix_time = seconds;
-    struct tm *tm_info = gmtime(&unix_time);
-    
-    ESP_LOGI("gps_ntp", "状态: PPS=%s, 计数=%u, 频率误差=%.1fppm, 校准因子=%.6f, NTP请求=%u, PPS时间=%02d:%02d:%02d.%06u",
-             pps_active_ ? "活跃" : "无效",
-             pps_count_,
-             frequency_error_ppm_,
-             micros_calibration_factor_,
-             ntp_requests_,
-             tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
-             (uint32_t)microseconds);
-    
-    // 显示系统时间用于对比
-    if (pps_active_) {
-      struct timeval tv;
-      gettimeofday(&tv, NULL);
-      struct tm *sys_tm = gmtime(&tv.tv_sec);
+    // 获取系统时间用于状态显示
+    struct timeval tv;
+    if (gettimeofday(&tv, nullptr) == 0) {
+      struct tm *tm_info = gmtime(&tv.tv_sec);
       
-      int64_t time_diff_us = (int64_t)precise_time_us - ((int64_t)tv.tv_sec * 1000000LL + tv.tv_usec);
-      ESP_LOGD("gps_ntp", "系统时间: %02d:%02d:%02d.%06u, 与PPS时间差: %lldμs",
-               sys_tm->tm_hour, sys_tm->tm_min, sys_tm->tm_sec, tv.tv_usec,
-               time_diff_us);
+      // 计算平均相位
+      float avg_phase_ms = calculate_average_pps_phase();
+      if (avg_phase_ms > 500.0f) avg_phase_ms -= 1000.0f;
+      
+      ESP_LOGI("gps_ntp", "状态: PPS=%s, 计数=%u, 驯服=%s, 误差=%.3fms, 平均相位=%.3fms, 驯服次数=%u, 跳过次数=%u, NTP请求=%u, 时间=%02d:%02d:%02d.%06u",
+               pps_active_ ? "活跃" : "无效",
+               pps_count_,
+               time_discipline_.disciplining ? "进行中" : "稳定",
+               time_discipline_.error_ms,
+               avg_phase_ms,
+               time_discipline_.discipline_count,
+               time_discipline_.skip_count,
+               ntp_requests_,
+               tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
+               tv.tv_usec);
     }
   }
 }
 
 // ==================== 配置输出 ====================
 void GPSNTPServer::dump_config() {
-  ESP_LOGCONFIG("gps_ntp", "GPS NTP服务器配置 (PPS虚拟RTC模式):");
+  ESP_LOGCONFIG("gps_ntp", "GPS NTP服务器配置:");
   ESP_LOGCONFIG("gps_ntp", "  PPS引脚: GPIO%d", pps_pin_);
   ESP_LOGCONFIG("gps_ntp", "  PPS活跃: %s", pps_active_ ? "是" : "否");
   ESP_LOGCONFIG("gps_ntp", "  PPS计数: %u", pps_count_);
-  ESP_LOGCONFIG("gps_ntp", "  频率误差: %.1f ppm", frequency_error_ppm_);
-  ESP_LOGCONFIG("gps_ntp", "  校准因子: %.6f", micros_calibration_factor_);
-  ESP_LOGCONFIG("gps_ntp", "  时间误差: %.3fms", time_discipline_.error_us / 1000.0f);
+  ESP_LOGCONFIG("gps_ntp", "  缓冲区填充: %s", pps_buffer_filled_ ? "是" : "否");
+  
+  // 显示平均相位
+  float avg_phase_ms = calculate_average_pps_phase();
+  if (avg_phase_ms > 500.0f) avg_phase_ms -= 1000.0f;
+  ESP_LOGCONFIG("gps_ntp", "  平均相位: %.3fms", avg_phase_ms);
+  
+  ESP_LOGCONFIG("gps_ntp", "  时间误差: %.3fms", time_discipline_.error_ms);
+  ESP_LOGCONFIG("gps_ntp", "  驯服状态: %s", time_discipline_.disciplining ? "进行中" : "稳定");
   ESP_LOGCONFIG("gps_ntp", "  驯服次数: %u", time_discipline_.discipline_count);
+  ESP_LOGCONFIG("gps_ntp", "  跳过次数: %u", time_discipline_.skip_count);
   ESP_LOGCONFIG("gps_ntp", "  NTP请求: %u", ntp_requests_);
   
-  // 显示基于PPS的时间
-  uint64_t precise_time_us = get_precise_time_us();
-  uint64_t seconds = precise_time_us / 1000000ULL;
-  uint64_t microseconds = precise_time_us % 1000000ULL;
-  time_t unix_time = seconds;
-  struct tm *tm_info = gmtime(&unix_time);
-  
-  ESP_LOGCONFIG("gps_ntp", "  PPS时间: %04d-%02d-%02d %02d:%02d:%02d.%06u UTC",
-               tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
-               tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
-               (uint32_t)microseconds);
-  
-  // 同时显示系统时间用于对比
   struct timeval tv;
   if (gettimeofday(&tv, nullptr) == 0) {
-    struct tm *sys_tm = gmtime(&tv.tv_sec);
+    struct tm *tm_info = gmtime(&tv.tv_sec);
     
     ESP_LOGCONFIG("gps_ntp", "  系统时间: %04d-%02d-%02d %02d:%02d:%02d.%06u UTC",
-                 sys_tm->tm_year + 1900, sys_tm->tm_mon + 1, sys_tm->tm_mday,
-                 sys_tm->tm_hour, sys_tm->tm_min, sys_tm->tm_sec,
+                 tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+                 tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
                  tv.tv_usec);
   }
 }
