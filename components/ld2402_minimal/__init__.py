@@ -1,4 +1,7 @@
-
+"""
+LD2402 Minimal Component for ESPHome
+极简的LD2402毫米波雷达组件（简化版 - 移除生命体征检测）
+"""
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import uart, sensor
@@ -15,11 +18,14 @@ CODEOWNERS = ["@your_username"]
 DEPENDENCIES = ["uart"]
 AUTO_LOAD = ["sensor"]
 
+# 命名空间
 ld2402_minimal_ns = cg.esphome_ns.namespace("ld2402_minimal")
 LD2402Minimal = ld2402_minimal_ns.class_("LD2402Minimal", cg.Component, uart.UARTDevice)
 
+# 配置常量
 CONF_DETECTION_STATE = "detection_state"
 
+# 配置模式
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(LD2402Minimal),
@@ -36,6 +42,7 @@ CONFIG_SCHEMA = cv.Schema(
     }
 ).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA)
 
+# UART配置验证
 FINAL_VALIDATE_SCHEMA = uart.final_validate_device_schema(
     "ld2402_minimal",
     require_tx=True,
@@ -47,16 +54,17 @@ FINAL_VALIDATE_SCHEMA = uart.final_validate_device_schema(
 
 
 async def to_code(config):
-
+    """生成代码"""
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)
     
-
+    # 设置距离传感器
     if CONF_DISTANCE in config:
         sens = await sensor.new_sensor(config[CONF_DISTANCE])
         cg.add(var.set_distance_sensor(sens))
-
+    
+    # 设置状态传感器
     if CONF_DETECTION_STATE in config:
         sens = await sensor.new_sensor(config[CONF_DETECTION_STATE])
         cg.add(var.set_state_sensor(sens))
