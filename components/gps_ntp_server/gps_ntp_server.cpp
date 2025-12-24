@@ -27,186 +27,8 @@ void IRAM_ATTR GPSNTPServer::pps_interrupt_handler() {
     last_interrupt_time = now;
     
     GPSNTPServer::instance_->pps_last_edge_us_ = now;
-    
-    // 将时间戳存入环形缓冲区
-    uint8_t index = GPSNTPServer::instance_->pps_buffer_index_;
-    GPSNTPServer::instance_->pps_timestamps_[index] = now;
-    GPSNTPServer::instance_->pps_buffer_index_ = (index + 1) % PPS_BUFFER_SIZE;
-    
-    // 标记缓冲区已填充满一次
-    if (index == PPS_BUFFER_SIZE - 1) {
-      GPSNTPServer::instance_->pps_buffer_filled_ = true;
-    }
-    
     GPSNTPServer::instance_->pps_count_++;
     GPSNTPServer::instance_->pps_triggered_ = true;
-  }
-}
-
-// ==================== 计算PPS时间戳平均值 ====================
-float GPSNTPServer::calculate_average_pps_phase() {
-  if (pps_count_ < 3) {  // 至少需要3个样本才开始计算
-    return 0.0f;
-  }
-  
-  // 计算缓冲区中有效样本的数量
-  uint8_t samples = pps_buffer_filled_ ? PPS_BUFFER_SIZE : pps_buffer_index_;
-  if (samples < 3) {
-    return 0.0f;
-  }
-  
-  // 计算平均相位（微秒部分）
-  uint64_t sum_us = 0;
-  
-  // 使用最近的有效样本（最多PPS_BUFFER_SIZE个）
-  uint8_t start_index = (pps_buffer_index_ + PPS_BUFFER_SIZE - samples) % PPS_BUFFER_SIZE;
-  
-  for (uint8_t i = 0; i < samples; i++) {
-    uint8_t idx = (start_index + i) % PPS_BUFFER_SIZE;
-    uint32_t us_part = pps_timestamps_[idx] % 1000000;  // 取微秒部分
-    sum_us += us_part;
-  }
-  
-  return (float)(sum_us / samples) / 1000.0f;  // 转换为毫秒
-}
-
-// ==================== 计算PPS间隔时间 ====================
-uint32_t GPSNTPServer::calculate_pps_interval(uint32_t current_time, uint32_t previous_time) {
-  if (current_time >= previous_time) {
-    return current_time - previous_time;
-  } else {
-    // 处理微秒计数器溢出
-    return (0xFFFFFFFFUL - previous_time) + current_time + 1;
-  }
-}
-
-// ==================== 时间驯服函数 ====================
-void GPSNTPServer::discipline_time() {
-  if (!pps_active_ || !pps_buffer_filled_) return;
-  
-  // 计算20次PPS的平均相位
-  float avg_phase_ms = calculate_average_pps_phase();
-  if (avg_phase_ms == 0.0f) return;
-  
-  // 将误差归一化到-500ms到+500ms范围
-  float error_ms = avg_phase_ms;
-  if (error_ms > 500.0f) {
-    error_ms = error_ms - 1000.0f;
-  }
-  
-  // 保存误差用于状态显示
-  time_discipline_.last_error = time_discipline_.error_ms;
-  time_discipline_.error_ms = error_ms;
-  time_discipline_.discipline_count++;
-  
-  // 根据误差大小进行分层调整（去掉了5ms的阈值限制）
-  float adjustment = 0.0f;
-  float abs_error = fabs(error_ms);
-  
-  // 非常精细的调整策略
-  if (abs_error > 100.0f) {
-    // 大误差：中等调整（40%）
-    adjustment = -error_ms * 0.4f;
-    ESP_LOGD("gps_ntp", "大误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
-  } else if (abs_error > 50.0f) {
-    // 中误差：中等调整（30%）
-    adjustment = -error_ms * 0.3f;
-    ESP_LOGD("gps_ntp", "中误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
-  } else if (abs_error > 20.0f) {
-    // 小误差：慢速调整（20%）
-    adjustment = -error_ms * 0.2f;
-    ESP_LOGD("gps_ntp", "小误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
-  } else if (abs_error > 10.0f) {
-    // 微小误差：极慢调整（10%）
-    adjustment = -error_ms * 0.1f;
-    ESP_LOGD("gps_ntp", "微误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
-  } else if (abs_error > 5.0f) {
-    // 极微误差：非常慢调整（5%）
-    adjustment = -error_ms * 0.05f;
-    ESP_LOGD("gps_ntp", "极微误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
-  } else if (abs_error > 2.0f) {
-    // 超微误差：极慢调整（3%）
-    adjustment = -error_ms * 0.03f;
-    ESP_LOGD("gps_ntp", "超微误差调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
-  } else if (abs_error > 0.5f) {
-    // 亚毫秒误差：非常缓慢调整（1%）
-    adjustment = -error_ms * 0.01f;
-    ESP_LOGD("gps_ntp", "亚毫秒调整: 平均误差%.2fms -> 调整%.2fms", error_ms, adjustment);
-  } else {
-    // 误差小于0.5ms：不调整，但记录稳定状态
-    time_discipline_.disciplining = false;
-    time_discipline_.skip_count++;
-    
-    // 每120次跳过记录一次（因为可能非常频繁）
-    if (time_discipline_.skip_count % 120 == 0) {
-      ESP_LOGD("gps_ntp", "时间稳定: 平均误差=%.3fms < 0.5ms, 跳过调整 #%u", 
-               error_ms, time_discipline_.skip_count);
-    }
-    return;
-  }
-  
-  // 限制调整幅度（根据误差大小动态调整上限）
-  float max_adjustment = 30.0f;
-  if (abs_error < 10.0f) max_adjustment = 10.0f;
-  if (abs_error < 5.0f) max_adjustment = 5.0f;
-  if (abs_error < 2.0f) max_adjustment = 2.0f;
-  if (abs_error < 1.0f) max_adjustment = 1.0f;
-  
-  if (adjustment > max_adjustment) adjustment = max_adjustment;
-  if (adjustment < -max_adjustment) adjustment = -max_adjustment;
-  
-  // 如果调整量太小（小于0.1ms），跳过
-  if (fabs(adjustment) < 0.1f) {
-    time_discipline_.disciplining = false;
-    time_discipline_.skip_count++;
-    return;
-  }
-  
-  time_discipline_.disciplining = true;
-  
-  // 调整系统时间（微秒级调整）
-  int32_t adjust_us = (int32_t)(adjustment * 1000.0f);
-  
-  struct timeval new_tv;
-  gettimeofday(&new_tv, NULL);
-  
-  // 应用调整
-  new_tv.tv_usec += adjust_us;
-  
-  // 处理进位
-  if (new_tv.tv_usec >= 1000000) {
-    new_tv.tv_sec += new_tv.tv_usec / 1000000;
-    new_tv.tv_usec %= 1000000;
-  } else if (new_tv.tv_usec < 0) {
-    new_tv.tv_sec -= (-new_tv.tv_usec / 1000000) + 1;
-    new_tv.tv_usec = 1000000 + (new_tv.tv_usec % 1000000);
-  }
-  
-  // 设置新时间
-  if (settimeofday(&new_tv, NULL) == 0) {
-    // 记录调整信息
-    float avg_phase_for_log = avg_phase_ms;
-    if (avg_phase_for_log > 500.0f) avg_phase_for_log -= 1000.0f;
-    
-    // 根据调整量大小使用不同的日志级别
-    if (abs_error > 20.0f) {
-      ESP_LOGI("gps_ntp", "时间驯服 #%u: 平均相位=%.2fms, 误差=%.2fms, 调整=%.2fms", 
-               time_discipline_.discipline_count,
-               avg_phase_for_log,
-               error_ms, adjustment);
-    } else if (abs_error > 5.0f) {
-      ESP_LOGD("gps_ntp", "时间驯服 #%u: 平均相位=%.2fms, 误差=%.2fms, 调整=%.2fms", 
-               time_discipline_.discipline_count,
-               avg_phase_for_log,
-               error_ms, adjustment);
-    } else {
-      ESP_LOGV("gps_ntp", "精细驯服 #%u: 平均相位=%.3fms, 误差=%.3fms, 调整=%.3fms", 
-               time_discipline_.discipline_count,
-               avg_phase_for_log,
-               error_ms, adjustment);
-    }
-  } else {
-    ESP_LOGE("gps_ntp", "时间驯服失败");
   }
 }
 
@@ -305,6 +127,104 @@ void GPSNTPServer::send_ntp_response(WiFiUDP &udp, IPAddress remote, int remoteP
   }
 }
 
+// ==================== 时间驯服函数 ====================
+void GPSNTPServer::discipline_time() {
+  if (!pps_active_) return;
+  
+  // 获取当前系统时间
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  
+  // 计算当前微秒部分（0-999999微秒）
+  uint32_t current_us = tv.tv_usec;
+  float current_ms = current_us / 1000.0f;
+  
+  // 将误差归一化到-500ms到+500ms范围
+  float error_ms = current_ms;
+  if (error_ms > 500.0f) {
+    error_ms = error_ms - 1000.0f;
+  }
+  
+  // 保存误差用于状态显示
+  time_discipline_.last_error = time_discipline_.error_ms;
+  time_discipline_.error_ms = error_ms;
+  time_discipline_.discipline_count++;
+  
+  // 误差小于5ms时不调整（避免PPS检测误差导致的误判）
+  if (fabs(error_ms) < 5.0f) {
+    time_discipline_.disciplining = false;
+    time_discipline_.skip_count++;
+    
+    // 每60次跳过记录一次
+    if (time_discipline_.skip_count % 60 == 0) {
+      ESP_LOGD("gps_ntp", "时间稳定: 误差=%.2fms < 5ms, 跳过调整 #%u", 
+               error_ms, time_discipline_.skip_count);
+    }
+    return;
+  }
+  
+  // 根据误差大小进行分层调整
+  float adjustment = 0.0f;
+  float abs_error = fabs(error_ms);
+  
+  if (abs_error > 100.0f) {
+    // 大误差：快速调整（50%）
+    adjustment = -error_ms * 0.5f;
+    ESP_LOGD("gps_ntp", "大误差调整: %.2fms -> %.2fms", error_ms, adjustment);
+  } else if (abs_error > 50.0f) {
+    // 中误差：中等调整（30%）
+    adjustment = -error_ms * 0.3f;
+    ESP_LOGD("gps_ntp", "中误差调整: %.2fms -> %.2fms", error_ms, adjustment);
+  } else if (abs_error > 20.0f) {
+    // 小误差：慢速调整（20%）
+    adjustment = -error_ms * 0.2f;
+    ESP_LOGD("gps_ntp", "小误差调整: %.2fms -> %.2fms", error_ms, adjustment);
+  } else if (abs_error >= 5.0f) {
+    // 微小误差：极慢调整（10%）
+    adjustment = -error_ms * 0.1f;
+    ESP_LOGD("gps_ntp", "微误差调整: %.2fms -> %.2fms", error_ms, adjustment);
+  }
+  
+  // 限制调整幅度（最大30ms）
+  if (adjustment > 30.0f) adjustment = 30.0f;
+  if (adjustment < -30.0f) adjustment = -30.0f;
+  
+  // 如果调整量太小（小于1ms），跳过
+  if (fabs(adjustment) < 1.0f) {
+    time_discipline_.disciplining = false;
+    return;
+  }
+  
+  time_discipline_.disciplining = true;
+  
+  // 调整系统时间（微秒级调整）
+  int32_t adjust_us = (int32_t)(adjustment * 1000.0f);
+  
+  struct timeval new_tv;
+  gettimeofday(&new_tv, NULL);
+  
+  // 应用调整
+  new_tv.tv_usec += adjust_us;
+  
+  // 处理进位
+  if (new_tv.tv_usec >= 1000000) {
+    new_tv.tv_sec += new_tv.tv_usec / 1000000;
+    new_tv.tv_usec %= 1000000;
+  } else if (new_tv.tv_usec < 0) {
+    new_tv.tv_sec -= (-new_tv.tv_usec / 1000000) + 1;
+    new_tv.tv_usec = 1000000 + (new_tv.tv_usec % 1000000);
+  }
+  
+  // 设置新时间
+  if (settimeofday(&new_tv, NULL) == 0) {
+    ESP_LOGI("gps_ntp", "时间驯服 #%u: 误差=%.2fms, 调整=%.2fms", 
+             time_discipline_.discipline_count,
+             error_ms, adjustment);
+  } else {
+    ESP_LOGE("gps_ntp", "时间驯服失败");
+  }
+}
+
 // ==================== 处理NTP请求 ====================
 void GPSNTPServer::handle_ntp_request() {
   int packetSize = udp_.parsePacket();
@@ -327,18 +247,11 @@ void GPSNTPServer::handle_ntp_request() {
 void GPSNTPServer::handle_pps() {
   if (pps_triggered_) {
     pps_triggered_ = false;
-    
-    // 至少需要3个PPS信号才开始判断
-    if (pps_count_ >= 3) {
-      pps_active_ = true;
-    }
-    
+    pps_active_ = true;
     pps_last_stable_ = millis();
     
-    // 只有当缓冲区填充满一次（20个样本）时才进行时间驯服
-    if (pps_buffer_filled_) {
-      discipline_time();
-    }
+    // PPS发生时立即进行时间驯服
+    discipline_time();
     
     // 记录PPS间隔（用于检测PPS质量）
     static uint32_t last_pps_time = 0;
@@ -355,14 +268,8 @@ void GPSNTPServer::handle_pps() {
       if (interval > 900 && interval < 1100) {
         // 正常
         if (pps_count_ % 60 == 0) {
-          // 计算当前PPS相位
-          uint32_t current_us = micros();
-          uint32_t us_part = current_us % 1000000;
-          float phase_ms = us_part / 1000.0f;
-          if (phase_ms > 500.0f) phase_ms -= 1000.0f;
-          
-          ESP_LOGD("gps_ntp", "PPS正常 #%u, 间隔: %.3fs, 相位: %.3fms, 引脚电平: %d", 
-                   pps_count_, interval_sec, phase_ms, pin_state);
+          ESP_LOGD("gps_ntp", "PPS正常 #%u, 间隔: %.3fs, 引脚电平: %d", 
+                   pps_count_, interval_sec, pin_state);
         }
       } else if (interval < 100) {
         // 极短的间隔，可能是抖动或错误触发
@@ -392,13 +299,6 @@ void GPSNTPServer::setup() {
   
   instance_ = this;
   
-  // 初始化PPS时间戳缓冲区
-  for (int i = 0; i < PPS_BUFFER_SIZE; i++) {
-    pps_timestamps_[i] = 0;
-  }
-  pps_buffer_index_ = 0;
-  pps_buffer_filled_ = false;
-  
   // 设置PPS引脚中断
   if (pps_pin_ > 0) {
     pinMode(pps_pin_, INPUT_PULLUP);
@@ -409,7 +309,6 @@ void GPSNTPServer::setup() {
                    FALLING);
     
     ESP_LOGI("gps_ntp", "PPS引脚: GPIO%d (下降沿触发)", pps_pin_);
-    ESP_LOGI("gps_ntp", "将使用最近%d次PPS信号的平均值进行精细时间驯服", PPS_BUFFER_SIZE);
   } else {
     ESP_LOGI("gps_ntp", "未配置PPS引脚，将使用纯系统时间");
   }
@@ -443,21 +342,14 @@ void GPSNTPServer::loop() {
     if (gettimeofday(&tv, nullptr) == 0) {
       struct tm *tm_info = gmtime(&tv.tv_sec);
       
-      // 计算平均相位
-      float avg_phase_ms = calculate_average_pps_phase();
-      if (avg_phase_ms > 500.0f) avg_phase_ms -= 1000.0f;
-      
-      ESP_LOGI("gps_ntp", "状态: PPS=%s, 计数=%u, 驯服=%s, 误差=%.3fms, 平均相位=%.3fms, 驯服次数=%u, 跳过次数=%u, NTP请求=%u, 时间=%02d:%02d:%02d.%06u",
+      ESP_LOGI("gps_ntp", "状态: PPS=%s, 计数=%u, 驯服=%s, 误差=%.2fms, 驯服次数=%u, NTP请求=%u, 时间=%02d:%02d:%02d",
                pps_active_ ? "活跃" : "无效",
                pps_count_,
                time_discipline_.disciplining ? "进行中" : "稳定",
                time_discipline_.error_ms,
-               avg_phase_ms,
                time_discipline_.discipline_count,
-               time_discipline_.skip_count,
                ntp_requests_,
-               tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
-               tv.tv_usec);
+               tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
     }
   }
 }
@@ -468,14 +360,7 @@ void GPSNTPServer::dump_config() {
   ESP_LOGCONFIG("gps_ntp", "  PPS引脚: GPIO%d", pps_pin_);
   ESP_LOGCONFIG("gps_ntp", "  PPS活跃: %s", pps_active_ ? "是" : "否");
   ESP_LOGCONFIG("gps_ntp", "  PPS计数: %u", pps_count_);
-  ESP_LOGCONFIG("gps_ntp", "  缓冲区填充: %s", pps_buffer_filled_ ? "是" : "否");
-  
-  // 显示平均相位
-  float avg_phase_ms = calculate_average_pps_phase();
-  if (avg_phase_ms > 500.0f) avg_phase_ms -= 1000.0f;
-  ESP_LOGCONFIG("gps_ntp", "  平均相位: %.3fms", avg_phase_ms);
-  
-  ESP_LOGCONFIG("gps_ntp", "  时间误差: %.3fms", time_discipline_.error_ms);
+  ESP_LOGCONFIG("gps_ntp", "  时间误差: %.2fms", time_discipline_.error_ms);
   ESP_LOGCONFIG("gps_ntp", "  驯服状态: %s", time_discipline_.disciplining ? "进行中" : "稳定");
   ESP_LOGCONFIG("gps_ntp", "  驯服次数: %u", time_discipline_.discipline_count);
   ESP_LOGCONFIG("gps_ntp", "  跳过次数: %u", time_discipline_.skip_count);
